@@ -1,0 +1,21 @@
+# repos
+LTX-2/
+
+# generated output
+output/
+multi_output/
+multi_16_output/
+outputs/
+
+# model weights (symlinked or downloaded)
+models/
+
+# database
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
