@@ -22,7 +22,7 @@ from pathlib import Path
 import torch
 
 from ltx_core.components.noisers import GaussianNoiser
-from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
+from ltx_core.model.video_vae import TileSizeConfig, get_video_chunks_number
 from ltx_core.quantization.fp8_cast import build_policy as fp8_cast_policy
 from ltx_pipelines.utils.blocks import (
     AudioDecoder,
@@ -206,7 +206,7 @@ def main() -> None:
     # --- decode video + audio on xpu:1 ---
     with _Timer("video+audio decode", CDEV):
         log.info("decoding video + audio on %s", CDEV)
-        tiling_config = TilingConfig.default()
+        tiling_config = TileSizeConfig.default()
         decoded_video = video_decoder(video_state.latent.to(CDEV), tiling_config, decode_generator)
         decoded_audio = audio_decoder(audio_state.latent.to(CDEV))
     _mem("after decode", CDEV)

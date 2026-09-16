@@ -17,8 +17,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   re-verify the harness; the pin is what keeps the editable install reproducible.
 - Upstream APIs drift between LTX-2 revisions and the harness is written against
   a specific one (`setup_env.sh` path-patches script bodies, not call signatures).
-  Known example: `PromptEncoder` takes `model_paths=ModelPaths.from_monolith(ckpt,
-  gemma_root)`, not `checkpoint_path`/`gemma_root`.
+  Known examples: `PromptEncoder` takes `model_paths=ModelPaths.from_monolith(ckpt,
+  gemma_root)`, not `checkpoint_path`/`gemma_root`; the decode tiling default is
+  `TileSizeConfig.default()` (`TilingConfig` is only a `TileSizeConfig | TileCountConfig`
+  alias and has no `.default()`).
 - `setup_env.sh` patches `LTX-2/.../devices.py` and `.../audio_vae/vocoder.py`
   in place. `patches/xpu.patch` is a reference diff (larger than what the
   script currently applies). Check `git -C LTX-2 status` before assuming.
