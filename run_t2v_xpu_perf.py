@@ -36,7 +36,7 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import assert_resolution
 from ltx_pipelines.utils.media_io import encode_video
 from ltx_pipelines.utils.model_paths import ModelPaths
-from ltx_pipelines.utils.types import ModalitySpec
+from ltx_pipelines.utils.types import ModalitySpec, OffloadMode
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ltx23")
@@ -64,7 +64,28 @@ FRAME_RATE = 24.0
 
 TDEV = torch.device("xpu", int(os.environ.get("LTX_TDEV", "0")))  # transformer
 CDEV = torch.device("xpu", int(os.environ.get("LTX_CDEV", "1")))  # vae / decoders
-GDEV = torch.device("cpu")  # Gemma text encoder (does not fit a single 24GB B60 in bf16)
+
+
+def _resolve_gemma_device(spec: str) -> torch.device:
+    spec = (spec or "cpu").strip().lower()
+    if spec in ("", "cpu"):
+        return torch.device("cpu")
+    if spec.startswith("xpu"):
+        parts = spec.split(":")
+        return torch.device("xpu", int(parts[1]) if len(parts) > 1 else 0)
+    return torch.device(spec)
+
+
+# Gemma text encoder: default CPU (bf16 ~23 GB does not fit a single 24 GB B60).
+# Set LTX_GEMMA_DEVICE=xpu:<n> (+ LTX_GEMMA_OFFLOAD=cpu) to stream it on an XPU.
+GDEV = _resolve_gemma_device(os.environ.get("LTX_GEMMA_DEVICE", "cpu"))
+GEMMA_OFFLOAD = {
+    "cpu": OffloadMode.CPU,
+    "disk": OffloadMode.DISK,
+}.get(os.environ.get("LTX_GEMMA_OFFLOAD", "none").strip().lower(), OffloadMode.NONE)
+if GDEV.type == "xpu" and GEMMA_OFFLOAD == OffloadMode.NONE:
+    log.warning("Gemma bf16 does not fit a 24GB XPU; forcing LTX_GEMMA_OFFLOAD=cpu")
+    GEMMA_OFFLOAD = OffloadMode.CPU
 
 
 def _mem(tag: str, dev: torch.device) -> None:
@@ -130,7 +151,7 @@ def main() -> None:
     log.info("constructing pipeline blocks")
     prompt_encoder = PromptEncoder(
         model_paths=ModelPaths.from_monolith(DISTILLED_CKPT, GEMMA_ROOT),
-        dtype=dtype, device=GDEV,
+        dtype=dtype, device=GDEV, offload_mode=GEMMA_OFFLOAD,
     )
     stage = DiffusionStage.from_checkpoint(
         checkpoint_path=DISTILLED_CKPT, dtype=dtype, device=TDEV,
@@ -155,7 +176,7 @@ def main() -> None:
         audio_context = data["audio_encoding"].to(TDEV)
         del data
     else:
-        with _Timer("prompt-encode (cpu)", CDEV):
+        with _Timer(f"prompt-encode ({GDEV})", CDEV):
             log.info("encoding prompt on %s", GDEV)
             (ctx_p,) = prompt_encoder([PROMPT], enhance_first_prompt=False, enhance_prompt_image=None)
         _mem("after prompt-encode", CDEV)

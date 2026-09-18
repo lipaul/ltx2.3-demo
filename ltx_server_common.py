@@ -35,6 +35,12 @@ GENERATION_SCRIPT = str(LTX23_RUN_DIR / "run_t2v_xpu_perf.py")
 MULTI_SCRIPT = str(LTX23_RUN_DIR / "run_multi_xpu.py")
 MAX_LOG_LINES = 100
 
+# Gemma text-encoder placement for the shared pre-encode step. Defaults to
+# block-streaming on a spare XPU (encoding runs before generation, so every
+# device is free); set LTX_GEMMA_DEVICE=cpu to fall back to the CPU path.
+GEMMA_DEVICE = os.environ.get("LTX_GEMMA_DEVICE", "xpu:0")
+GEMMA_OFFLOAD = os.environ.get("LTX_GEMMA_OFFLOAD", "cpu")
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -331,12 +337,15 @@ class MultiLtxWorker:
 
             try:
                 # Step 1: encode prompts via encode_prompts.py (shared Gemma)
-                self._state.multi_append_log("[step 1] Encoding prompts via Gemma (CPU)...")
+                self._state.multi_append_log(
+                    f"[step 1] Encoding prompts via Gemma ({GEMMA_DEVICE}, offload={GEMMA_OFFLOAD})..."
+                )
                 logger.info("Step 1/%d: encoding %d prompts via encode_prompts.py", n + 1, n)
                 env = os.environ.copy()
                 env.update({
                     "LTX_PROMPTS_FILE": prompts_file,
-                    "LTX_GEMMA_DEVICE": "cpu",
+                    "LTX_GEMMA_DEVICE": GEMMA_DEVICE,
+                    "LTX_GEMMA_OFFLOAD": GEMMA_OFFLOAD,
                     "HF_HUB_OFFLINE": "1",
                     "TOKENIZERS_PARALLELISM": "false",
                 })

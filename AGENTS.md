@@ -49,9 +49,16 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 ## Architecture
 
 - Device layout per worker `i`: transformer on `xpu:2i`, VAE/decoders on
-  `xpu:2i+1`; Gemma-3-12B text encoder on CPU (bf16 ~24 GB does not fit a
-  24 GB B60). Max 16 workers on 32 XPUs. `LTX_MULTI_MODE` (8 or 16) sets the
+  `xpu:2i+1`. Max 16 workers on 32 XPUs. `LTX_MULTI_MODE` (8 or 16) sets the
   server/`ltx_server.py` worker count.
+- Text encoding is a shared pre-generation step (`encode_prompts.py`): Gemma-3-12B
+  bf16 (~23 GB) does not fit a 24 GB B60, so it runs block-streamed on a spare
+  XPU by default (`LTX_GEMMA_DEVICE=xpu:0`, `LTX_GEMMA_OFFLOAD=cpu`; ~2 blocks
+  resident, weights pinned in RAM). Encoding precedes generation, so all XPUs
+  are free. Set `LTX_GEMMA_DEVICE=cpu` to fall back to the old CPU path. The
+  legacy per-prompt mode is `LTX_ENCODE_MODE=loop`; the default `batch` encodes
+  the whole prompt list in one forward. `encode_prompts.py` must stay under
+  `torch.no_grad()` — otherwise Gemma's 48-layer autograd graph balloons memory.
 - Generation is two-stage (stage 1 low-res denoise, 2x spatial upsample,
   stage 2 refine). Target resolution must be divisible by 64; stage 1 is half.
 - The server spawns subprocesses per job (via `run_t2v_xpu_perf.py`) instead
