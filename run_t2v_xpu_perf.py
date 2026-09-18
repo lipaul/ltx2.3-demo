@@ -17,6 +17,7 @@ the video/audio latents between stages.
 import logging
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -33,7 +34,7 @@ from ltx_pipelines.utils.blocks import (
 )
 from ltx_pipelines.utils.constants import DISTILLED_SIGMAS, STAGE_2_DISTILLED_SIGMAS
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from ltx_pipelines.utils.helpers import assert_resolution
+from ltx_pipelines.utils.helpers import assert_resolution, cleanup_memory
 from ltx_pipelines.utils.media_io import encode_video
 from ltx_pipelines.utils.model_paths import ModelPaths
 from ltx_pipelines.utils.types import ModalitySpec, OffloadMode
@@ -135,6 +136,31 @@ class _Timer:
         return False
 
 
+# --- keep the transformer resident across both stages ---
+# DiffusionStage.__call__ builds and disposes the transformer on every call, so
+# stage 2 reloads the fp8 weights (~13 s cold / ~5 s warm). Both stages run on
+# TDEV and the upsampler/decoders live on CDEV, so the model can stay resident
+# from stage 1 through stage 2. Set LTX_KEEP_TRANSFORMER=0 to disable.
+_KEEP_TRANSFORMER = os.environ.get("LTX_KEEP_TRANSFORMER", "1") == "1"
+_transformer_cache: dict[int, object] = {}
+
+if _KEEP_TRANSFORMER:
+
+    def _reuse_transformer_ctx(self, **kwargs):
+        model = _transformer_cache.get(id(self))
+        if model is None:
+            model = self._build_transformer(**kwargs)
+            _transformer_cache[id(self)] = model
+
+        @contextmanager
+        def _cached():
+            yield model
+
+        return _cached()
+
+    DiffusionStage._transformer_ctx = _reuse_transformer_ctx
+
+
 @torch.inference_mode()
 def main() -> None:
     height, width = STAGE1_H * 2, STAGE1_W * 2
@@ -223,6 +249,15 @@ def main() -> None:
             ),
         )
     _mem("after stage2", TDEV)
+
+    if _KEEP_TRANSFORMER:
+        for _m in _transformer_cache.values():
+            try:
+                _m.dispose()
+            except Exception:
+                _m.to("meta")
+        _transformer_cache.clear()
+        cleanup_memory()
 
     # --- decode video + audio on xpu:1 ---
     with _Timer("video+audio decode", CDEV):

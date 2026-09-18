@@ -61,6 +61,11 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `torch.no_grad()` — otherwise Gemma's 48-layer autograd graph balloons memory.
 - Generation is two-stage (stage 1 low-res denoise, 2x spatial upsample,
   stage 2 refine). Target resolution must be divisible by 64; stage 1 is half.
+- `run_t2v_xpu_perf.py` builds the transformer once and keeps it resident across
+  both stages instead of letting `DiffusionStage.__call__` rebuild it for stage 2
+  (~5 s saved per video). Safe because both stages run on the transformer device
+  while the upsampler/decoders use the VAE device. Disable with
+  `LTX_KEEP_TRANSFORMER=0`.
 - The server spawns subprocesses per job (via `run_t2v_xpu_perf.py`) instead
   of loading models in-process, to avoid OOM from model lifecycle buildup.
 - Multi-worker spawns are staggered (`LTX_SPAWN_DELAY`, seconds) to avoid XPU
