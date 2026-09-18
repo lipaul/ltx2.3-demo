@@ -82,6 +82,13 @@ the model stays resident from stage 1 through stage 2.
   8-worker wall     165.6 s -> 158.0 s
   16-worker wall    182.2 s -> 171.7 s   (8/8 and 16/16 succeeded)
 
+Confirmed rerun (16 workers, 16/16 succeeded): 178.4 s wall
+  encode phase (16 prompts)    44.7 s  (29.9 s encode + subprocess startup)
+  generation phase            133.6 s
+  per worker: stage-1 42.8, upsample 2.1, stage-2 39.4, audio 8.2, mux 18.4
+
+  => 16-video end-to-end wall is ~172-178 s (run-to-run variance).
+
   LTX_KEEP_TRANSFORMER=0 restores the per-stage rebuild (default 1).
 
 Dead ends (measured, reverted)
