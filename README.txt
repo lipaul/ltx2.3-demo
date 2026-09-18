@@ -54,4 +54,51 @@ Env vars:
   LTX_GEMMA_OFFLOAD  none | cpu | disk (cpu = pinned RAM, ~2 blocks on XPU)
   LTX_ENCODE_MODE    batch (default) | loop
 
+
+Generation performance
+----------------------
+Per-worker cost at 1024x1024 / 121 frames (16-worker run, before the change):
+
+  stage-1 denoise (8 steps, incl. transformer build)     42.2 s
+  spatial-upsample 2x                                     2.1 s
+  stage-2 denoise (3 steps, incl. transformer build)     44.3 s
+  video+audio decode (audio VAE+vocoder; video lazy)      8.2 s
+  mux to mp4 (mostly LAZY video VAE decode)              18.3 s
+  -------------------------------------------------------------
+  total                                                 ~115 s
+
+Note: VideoDecoder returns a lazy iterator, so the conv VAE video decode
+(~16 s) happens while encode_video consumes it and is billed to "mux to mp4".
+x264 itself is only ~1 s for a 121-frame 1024x1024 clip.
+
+Shipped: transformer resident across both stages (9e9ee20)
+----------------------------------------------------------
+DiffusionStage.__call__ rebuilds and disposes the transformer on every call,
+so stage 2 reloaded the fp8 weights (~5 s warm, ~13 s cold). Both stages run
+on the transformer device and the upsampler/decoders run on the VAE device, so
+the model stays resident from stage 1 through stage 2.
+
+  stage-2 denoise    44.6 s -> 39.2 s per worker
+  8-worker wall     165.6 s -> 158.0 s
+  16-worker wall    182.2 s -> 171.7 s   (8/8 and 16/16 succeeded)
+
+  LTX_KEEP_TRANSFORMER=0 restores the per-stage rebuild (default 1).
+
+Dead ends (measured, reverted)
+------------------------------
+- x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video
+  VAE decode, not the encoder, so there is <1 s of headroom.
+- VAE decode tiling / memory_efficient=False: the conv VAE decode peaks near
+  the 24 GB limit with the default tiles; larger/untiled configs OOM.
+- torch.compile via DiffusionStage's CompilationConfig: incompatible with the
+  fp8-cast policy on the pinned LTX-2 revision (the compiled "._orig_mod"
+  key rewrite desyncs the prequant *_scale keys). Not shipped.
+
+Remaining known levers (not done)
+---------------------------------
+- torch.compile the eager-built transformer at the harness level (bypasses the
+  sd_ops rewrite). High risk on XPU, unverified payoff.
+- conv VAE decode memory/partitioning (dominates the post-denoise tail).
+- audio VAE+vocoder (~8 s); the XPU patch upcasts it to fp32 for correctness.
+
 See AGENTS.md for the full architecture and device layout.
