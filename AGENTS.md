@@ -79,5 +79,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - `LTX_FRAMES` must be `8k+1`; 73 hangs the XPU driver (see
   `run_t2v_xpu_perf.py:61`).
 - Prompts for encode: `LTX_PROMPTS_FILE` (JSON array) or stdin JSON.
+- Text encoder: `LTX_GEMMA_DEVICE`, `LTX_GEMMA_OFFLOAD`, `LTX_GEMMA_FP8`,
+  `LTX_GEMMA_RESIDENT`, `LTX_ENCODE_MODE`. The server's persistent encoder
+  service is `LTX_ENCODER_SERVICE=1` (+ `LTX_ENCODER_FP8`, `LTX_ENCODER_SOCK`);
+  `encode_service.py` keeps the Gemma pinned source warm across jobs (~16.6 s
+  warm encode for 16 prompts vs a ~44.7 s per-job subprocess encode phase).
 - Server: `LTX_HOST`, `LTX_PORT`, `LTX_API_TOKEN`, `LTX_QUEUE_SIZE`,
   `LTX_OUTPUT_DIR`, `LTX_DB`.

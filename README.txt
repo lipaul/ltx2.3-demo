@@ -140,12 +140,33 @@ Findings:
     upcast temporaries + processor > 24 GB); batch 8 fits.
 
 => The real lever is to avoid re-loading Gemma every job: a long-lived encoder
-process that caches the (fp8) weights and the embeddings processor, then per job
-only moves weights to the XPU, runs the forward (splitting batch 8+8 for fp8),
-and frees the XPU before generation. That is the planned T3.
+process that keeps the pinned CPU weight source warm, rebuilds only the small
+GPU wrapper per job, and frees the XPU before generation.
+
+T3 (shipped): persistent encoder service
+----------------------------------------
+encode_service.py runs a long-lived process that keeps the Gemma pinned CPU
+weight source cached (PinnedWeightSource.cleanup neutralised) and serves encode
+requests over a Unix socket. The server starts it lazily and falls back to the
+encode_prompts.py subprocess on any error.
+
+Measured (16 prompts, one warm process):
+  bf16 streaming   cold 24.2 s -> warm 17.5 s
+  fp8 streaming    cold 23.9 s -> warm 16.6 s
+i.e. the per-job encode drops from the ~44.7 s encode phase (which pays a fresh
+subprocess import + pinned rebuild every job) to a warm ~16.6 s. The process
+holds no XPU memory between requests, so generation workers get a clean device.
+Validated end-to-end via the server (2 jobs x 2 videos, 2/2 each, warm reuse).
+
+A CPU<->XPU model-move variant (keep the built fp8 model on CPU, move it in/out
+per job) was rejected: the move alone costs ~27 s/job (many small fp8 copies)
+and intermittently raises level_zero OUT_OF_RESOURCES.
 
 Env switches added (default off, so behavior is unchanged):
   LTX_GEMMA_FP8=1        fp8-cast the Gemma linears (streaming path)
   LTX_GEMMA_RESIDENT=1   build Gemma fully resident (implies fp8)
+  LTX_ENCODER_SERVICE=1  server uses the persistent encode_service.py process
+  LTX_ENCODER_FP8=1      fp8 weights for that service (default on)
+  LTX_ENCODER_SOCK       socket path (default /tmp/ltx_encoder.sock)
 
 See AGENTS.md for the full architecture and device layout.

@@ -41,6 +41,79 @@ MAX_LOG_LINES = 100
 GEMMA_DEVICE = os.environ.get("LTX_GEMMA_DEVICE", "xpu:0")
 GEMMA_OFFLOAD = os.environ.get("LTX_GEMMA_OFFLOAD", "cpu")
 
+# Persistent encoder service (T3): a long-lived process that keeps the Gemma
+# pinned weight source warm across jobs, so the per-job encode skips the
+# subprocess import and the pinned-source rebuild. Off by default; enable with
+# LTX_ENCODER_SERVICE=1. Falls back to the encode_prompts.py subprocess.
+ENCODER_SERVICE = os.environ.get("LTX_ENCODER_SERVICE", "0") == "1"
+ENCODER_FP8 = os.environ.get("LTX_ENCODER_FP8", "1") == "1"
+ENCODER_SOCK = os.environ.get("LTX_ENCODER_SOCK", "/tmp/ltx_encoder.sock")
+_ENCODER_PROC: subprocess.Popen | None = None
+_ENCODER_LOCK = threading.Lock()
+
+
+def _gemma_device_is_xpu(spec: str) -> bool:
+    return (spec or "").strip().lower().startswith("xpu")
+
+
+def _encoder_ping() -> bool:
+    import socket as _socket
+
+    if not os.path.exists(ENCODER_SOCK):
+        return False
+    try:
+        c = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        c.settimeout(3)
+        c.connect(ENCODER_SOCK)
+        c.sendall(b'{"ping": true}\n')
+        c.recv(4096)
+        c.close()
+        return True
+    except OSError:
+        return False
+
+
+def _ensure_encoder_service() -> bool:
+    global _ENCODER_PROC
+    if _encoder_ping():
+        return True
+    Path(ENCODER_SOCK).unlink(missing_ok=True)
+    cmd = [LTX23_ENV_PYTHON, "-u", str(LTX23_RUN_DIR / "encode_service.py"),
+           "--sock", ENCODER_SOCK, "--device", GEMMA_DEVICE]
+    if ENCODER_FP8:
+        cmd.append("--fp8")
+    logger.info("starting encoder service: %s", " ".join(cmd))
+    _ENCODER_PROC = subprocess.Popen(cmd, cwd=str(LTX23_RUN_DIR))
+    for _ in range(240):
+        if _encoder_ping():
+            return True
+        if _ENCODER_PROC.poll() is not None:
+            logger.error("encoder service exited rc=%s", _ENCODER_PROC.returncode)
+            return False
+        time.sleep(0.5)
+    return False
+
+
+def _encode_via_service(prompts: list[str], out_dir: str) -> str:
+    import socket as _socket
+
+    req = json.dumps({"prompts": prompts, "out_dir": out_dir}) + "\n"
+    c = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    c.settimeout(900)
+    c.connect(ENCODER_SOCK)
+    c.sendall(req.encode())
+    data = b""
+    while not data.endswith(b"\n"):
+        chunk = c.recv(1 << 20)
+        if not chunk:
+            break
+        data += chunk
+    c.close()
+    resp = json.loads(data.decode())
+    if not resp.get("ok"):
+        raise RuntimeError(resp.get("error", "encoder service error"))
+    return resp["out_dir"]
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -336,31 +409,50 @@ class MultiLtxWorker:
                 json.dump(prompts, f)
 
             try:
-                # Step 1: encode prompts via encode_prompts.py (shared Gemma)
+                # Step 1: encode prompts (shared Gemma)
                 self._state.multi_append_log(
                     f"[step 1] Encoding prompts via Gemma ({GEMMA_DEVICE}, offload={GEMMA_OFFLOAD})..."
                 )
-                logger.info("Step 1/%d: encoding %d prompts via encode_prompts.py", n + 1, n)
-                env = os.environ.copy()
-                env.update({
-                    "LTX_PROMPTS_FILE": prompts_file,
-                    "LTX_GEMMA_DEVICE": GEMMA_DEVICE,
-                    "LTX_GEMMA_OFFLOAD": GEMMA_OFFLOAD,
-                    "HF_HUB_OFFLINE": "1",
-                    "TOKENIZERS_PARALLELISM": "false",
-                })
-                enc_result = subprocess.run(
-                    [LTX23_ENV_PYTHON, "-u", str(LTX23_RUN_DIR / "encode_prompts.py")],
-                    capture_output=True, text=True, timeout=600,
-                    env=env, cwd=str(LTX23_RUN_DIR),
-                )
-                if enc_result.returncode != 0:
-                    raise RuntimeError(
-                        f"encode_prompts.py failed: {(enc_result.stderr or '')[-500:]}"
+                encode_t0 = time.perf_counter()
+                embeddings_dir = None
+                if ENCODER_SERVICE and _gemma_device_is_xpu(GEMMA_DEVICE):
+                    logger.info("Step 1/%d: encoding %d prompts via encoder service", n + 1, n)
+                    try:
+                        if _ensure_encoder_service():
+                            embeddings_dir = _encode_via_service(
+                                prompts, os.path.join(job_dir, "embeddings")
+                            )
+                            self._state.multi_append_log(
+                                f"[step 1] Done (service), embeddings in {embeddings_dir}"
+                            )
+                        else:
+                            logger.warning("encoder service unavailable; falling back to subprocess")
+                    except Exception:
+                        logger.exception("encoder service failed; falling back to subprocess")
+                        embeddings_dir = None
+                if embeddings_dir is None:
+                    logger.info("Step 1/%d: encoding %d prompts via encode_prompts.py", n + 1, n)
+                    env = os.environ.copy()
+                    env.update({
+                        "LTX_PROMPTS_FILE": prompts_file,
+                        "LTX_GEMMA_DEVICE": GEMMA_DEVICE,
+                        "LTX_GEMMA_OFFLOAD": GEMMA_OFFLOAD,
+                        "HF_HUB_OFFLINE": "1",
+                        "TOKENIZERS_PARALLELISM": "false",
+                    })
+                    enc_result = subprocess.run(
+                        [LTX23_ENV_PYTHON, "-u", str(LTX23_RUN_DIR / "encode_prompts.py")],
+                        capture_output=True, text=True, timeout=600,
+                        env=env, cwd=str(LTX23_RUN_DIR),
                     )
-                embeddings_dir = (enc_result.stdout or "").strip().splitlines()[-1]
+                    if enc_result.returncode != 0:
+                        raise RuntimeError(
+                            f"encode_prompts.py failed: {(enc_result.stderr or '')[-500:]}"
+                        )
+                    embeddings_dir = (enc_result.stdout or "").strip().splitlines()[-1]
+                    self._state.multi_append_log(f"[step 1] Done, embeddings in {embeddings_dir}")
                 logger.info("Embeddings dir: %s", embeddings_dir)
-                self._state.multi_append_log(f"[step 1] Done, embeddings in {embeddings_dir}")
+                logger.info("Step 1 done in %.1f s", time.perf_counter() - encode_t0)
 
                 # Step 2: spawn generation workers with stagger
                 self._state.multi_append_log(f"[step 2] Spawning {n} workers...")
