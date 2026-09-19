@@ -22,6 +22,7 @@ from pathlib import Path
 
 import torch
 
+import gemma_fp8
 from ltx_core.quantization.fp8_cast import build_policy as fp8_cast_policy
 from ltx_pipelines.utils.blocks import PromptEncoder
 from ltx_pipelines.utils.model_paths import ModelPaths
@@ -54,6 +55,50 @@ def _resolve_offload(spec: str) -> OffloadMode:
     if spec == "disk":
         return OffloadMode.DISK
     return OffloadMode.NONE
+
+
+def _install_gemma_fp8() -> None:
+    """Make PromptEncoder's internally-built Gemma ops fp8-cast (streaming path)."""
+    import ltx_pipelines.utils.blocks as blocks_mod
+
+    if getattr(blocks_mod, "_ltx_gemma_fp8_installed", False):
+        return
+    original = blocks_mod.get_gemma_ops
+
+    def patched(path):
+        sd_ops, module_ops = original(path)
+        return gemma_fp8.with_gemma_fp8(sd_ops, module_ops)
+
+    blocks_mod.get_gemma_ops = patched
+    blocks_mod._ltx_gemma_fp8_installed = True
+    log.info("installed Gemma fp8-cast ops (streaming)")
+
+
+def _build_resident_fp8_encoder(device: torch.device) -> PromptEncoder:
+    """Build a PromptEncoder whose Gemma runs fully resident with fp8 weights."""
+    from ltx_core.loader.registry import ModelRegistry
+    from ltx_core.loader.single_gpu_model_builder import SingleGPUModelBuilder as Builder
+    from ltx_core.text_encoders.gemma import (
+        GemmaTextEncoderConfigurator,
+        get_gemma_ops,
+        resolve_gemma_weight_paths,
+    )
+
+    sd_ops, module_ops = get_gemma_ops(GEMMA_ROOT)
+    sd_ops, module_ops = gemma_fp8.with_gemma_fp8(sd_ops, module_ops)
+    builder = Builder(
+        model_path=resolve_gemma_weight_paths(GEMMA_ROOT),
+        model_class_configurator=GemmaTextEncoderConfigurator.with_gemma_model_path(GEMMA_ROOT),
+        model_sd_ops=sd_ops,
+        module_ops=module_ops,
+        registry=ModelRegistry(cache_models=True, cache_weights=False),
+    )
+    return PromptEncoder(
+        model_paths=ModelPaths.from_monolith(DISTILLED_CKPT, GEMMA_ROOT),
+        dtype=torch.bfloat16,
+        device=device,
+        text_encoder_builder=builder,
+    )
 
 
 @torch.no_grad()
@@ -98,21 +143,36 @@ def main() -> None:
     mode = os.environ.get("LTX_ENCODE_MODE", "batch").strip().lower()
     device = _resolve_device(os.environ.get("LTX_GEMMA_DEVICE", "cpu"))
     offload_mode = _resolve_offload(os.environ.get("LTX_GEMMA_OFFLOAD", "none"))
-    if device.type == "xpu" and offload_mode == OffloadMode.NONE:
+    use_fp8 = os.environ.get("LTX_GEMMA_FP8", "0") == "1"
+    resident = os.environ.get("LTX_GEMMA_RESIDENT", "0") == "1"
+
+    if resident:
+        # Resident fp8 Gemma ignores offload (needs the whole model on one device).
+        offload_mode = OffloadMode.NONE
+        use_fp8 = True
+    if device.type == "xpu" and offload_mode == OffloadMode.NONE and not resident:
         log.warning("Gemma bf16 does not fit a 24GB XPU; forcing LTX_GEMMA_OFFLOAD=cpu")
         offload_mode = OffloadMode.CPU
+    if use_fp8 and not resident:
+        _install_gemma_fp8()
 
     log.info("building fp8-cast quantization policy...")
     _ = fp8_cast_policy(DISTILLED_CKPT)
 
     t_build = time.perf_counter()
-    log.info("building PromptEncoder (device=%s, offload=%s, mode=%s)...", device, offload_mode.value, mode)
-    prompt_encoder = PromptEncoder(
-        model_paths=ModelPaths.from_monolith(DISTILLED_CKPT, GEMMA_ROOT),
-        dtype=torch.bfloat16,
-        device=device,
-        offload_mode=offload_mode,
+    log.info(
+        "building PromptEncoder (device=%s, offload=%s, mode=%s, fp8=%s, resident=%s)...",
+        device, offload_mode.value, mode, use_fp8, resident,
     )
+    if resident:
+        prompt_encoder = _build_resident_fp8_encoder(device)
+    else:
+        prompt_encoder = PromptEncoder(
+            model_paths=ModelPaths.from_monolith(DISTILLED_CKPT, GEMMA_ROOT),
+            dtype=torch.bfloat16,
+            device=device,
+            offload_mode=offload_mode,
+        )
     log.info("PromptEncoder constructed in %.1f s", time.perf_counter() - t_build)
 
     out_dir = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="ltx_embeddings_")

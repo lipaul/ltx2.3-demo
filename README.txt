@@ -113,11 +113,39 @@ Dead ends (measured, reverted)
   fp8-cast policy on the pinned LTX-2 revision (the compiled "._orig_mod"
   key rewrite desyncs the prequant *_scale keys). Not shipped.
 
-Remaining known levers (not done)
----------------------------------
-- torch.compile the eager-built transformer at the harness level (bypasses the
-  sd_ops rewrite). High risk on XPU, unverified payoff.
-- conv VAE decode memory/partitioning (dominates the post-denoise tail).
-- audio VAE+vocoder (~8 s); the XPU patch upcasts it to fp32 for correctness.
+Text-encoder (TE) analysis and Phase 4 A/B
+------------------------------------------
+TE is the shared pre-encode step: it runs serially on one XPU before the 16
+generation workers start, and is ~25% of a 16-video job (44.7 s of 178.4 s).
+Cost model per job (16 prompts, measured):
+  build Gemma (read 23 GB bf16 -> pinned/stream -> device)   ~11-20 s
+  Gemma forward ([16,1024], incl. H2D weight streaming)      ~10.6 s
+  embeddings processor (49 layers -> aggregate -> connectors) ~4.8 s
+  subprocess torch/ltx import                                 ~10-15 s
+So the fixed per-job model load/import dominates; the marginal cost per prompt is
+small (batch amortizes the weight streaming).
+
+Phase 4 T1/T2 A/B (8 and 16 prompts; wall / encode):
+  T0 bf16 streaming (current)      8p: 29.4 / 21.0   16p: 34.8 / 26.5
+  T1 fp8 streaming                 8p: 27.2 / 19.2   16p: 30.7 / 23.3  (-12%)
+  T2a fp8 resident, 1 XPU          8p: 30.1 / 22.3   16p: OOM (batch16)
+  T2b fp8 resident, K XPUs (shard) 16p: K=2 47.7 s, K=4 32.1 s, K=8 48.5 s
+Findings:
+  - fp8 (LTX_GEMMA_FP8=1) only halves the H2D bytes; compute stays bf16, so a
+    mere ~12% win. It also shifts the embeddings (video rel-L2 4.3%, audio 2.4%).
+  - Sharding across K XPUs gives no speedup: every shard re-pays the ~20 s model
+    load, so wall is flat and K=8 even contends/fails. Data-parallel replication
+    is the wrong shape while the fixed load dominates.
+  - Resident fp8 does not fit batch 16 (10 GB weights + 6 GB hidden states +
+    upcast temporaries + processor > 24 GB); batch 8 fits.
+
+=> The real lever is to avoid re-loading Gemma every job: a long-lived encoder
+process that caches the (fp8) weights and the embeddings processor, then per job
+only moves weights to the XPU, runs the forward (splitting batch 8+8 for fp8),
+and frees the XPU before generation. That is the planned T3.
+
+Env switches added (default off, so behavior is unchanged):
+  LTX_GEMMA_FP8=1        fp8-cast the Gemma linears (streaming path)
+  LTX_GEMMA_RESIDENT=1   build Gemma fully resident (implies fp8)
 
 See AGENTS.md for the full architecture and device layout.
