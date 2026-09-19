@@ -91,6 +91,18 @@ Confirmed rerun (16 workers, 16/16 succeeded): 178.4 s wall
 
   LTX_KEEP_TRANSFORMER=0 restores the per-stage rebuild (default 1).
 
+Single clip (transformer on xpu:30, VAE/decoders on xpu:31):
+  LTX_TDEV=30 LTX_CDEV=31 LTX_GEMMA_DEVICE=xpu:0 LTX_GEMMA_OFFLOAD=cpu \
+    .venv/bin/python run_t2v_xpu_perf.py
+  1024x1024 / 121 frames / default prompt: total 131.8 s
+    prompt-encode (xpu:0)   19.1 s
+    stage-1 denoise         39.3 s
+    spatial-upsample 2x      2.0 s
+    stage-2 denoise         39.0 s
+    video+audio decode      14.2 s
+    mux to mp4              18.3 s
+  peak xpu:30 18.2 GB, xpu:31 0.8 GB
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video
