@@ -15,6 +15,53 @@ Multi clip (N videos):
   .venv/bin/python run_multi_16.py --prompts-file prompts.json --job-dir OUT
 
 
+Web server (16-video service)
+-----------------------------
+Use the project venv interpreter (.venv/bin/python). Do NOT use run.sh /
+start_ltx_server.sh: they hardcode a nonexistent interpreter.
+
+A) Local test (loopback, no token required):
+  cd /home/lm/work/ltx2.3-demo
+  LTX_MULTI_MODE=16 LTX_HOST=127.0.0.1 \
+    .venv/bin/python ltx_server.py
+  # open http://127.0.0.1:8001/
+
+B) LAN access (token required when LTX_HOST is not loopback):
+  LTX_MULTI_MODE=16 LTX_HOST=0.0.0.0 LTX_API_TOKEN=<token> \
+    .venv/bin/python ltx_server.py
+  # open http://<host-ip>:8001/ and paste the same token into the API Token box
+
+C) With the persistent encoder service (T3) and a larger spawn stagger:
+  LTX_MULTI_MODE=16 LTX_HOST=127.0.0.1 \
+  LTX_ENCODER_SERVICE=1 LTX_ENCODER_FP8=1 LTX_SPAWN_DELAY=4 \
+    .venv/bin/python ltx_server.py
+
+Run in the background with a log:
+  ... .venv/bin/python -u ltx_server.py > /tmp/ltx_server.log 2>&1 &
+
+Options: LTX_PORT (default 8001), LTX_OUTPUT_DIR, LTX_DB, LTX_ENCODER_SOCK,
+LTX_ENCODER_FP8=0 for bf16.
+
+In the UI: 16 prompt boxes (count = LTX_MULTI_MODE; fewer is allowed), press
+"Generate". Output: $LTX_OUTPUT_DIR/<job_id>/video_i.mp4, per-worker logs
+video_i.log. Progress: SSE /api/events.
+
+Pre-flight / cleanup:
+  ps -eo pid,cmd | grep -E "ltx_server|run_t2v|encode_service" | grep -v grep
+  ss -ltn | grep 8001
+  for d in 0 30 31; do xpu-smi stats -d $d | grep -i "GPU Memory Used"; done
+
+Submit a job without the UI:
+  curl -s -X POST http://127.0.0.1:8001/api/multi-jobs \
+    -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+    -d '{"prompts": ["... 16 prompts ..."]}'
+
+Known issue: 16-way concurrent model init is occasionally unstable (workers
+stall in "Building transformer"; recent runs failed 7/16). Raise
+LTX_SPAWN_DELAY, or cold-boot to recover the driver, or A/B with
+LTX_ENCODER_SERVICE=0 to check whether the encoder service is involved.
+
+
 Text-encoder performance
 ------------------------
 Progress: the shared pre-encode step (Gemma-3-12B) used to be the single
