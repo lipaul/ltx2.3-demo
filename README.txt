@@ -217,6 +217,45 @@ Peak is 18.16 GB on xpu:0 in every case.
   - compile artifacts are cached in .torch_cache/ (gitignored), keyed by the
     fixed shapes, so only the first run pays the JIT.
 
+B70 profiling & utilization
+---------------------------
+Kernel XPU-time shares for one clip (torch.profiler with CPU+XPU activities;
+profiler overhead inflates wall time ~1.3x, so use the shares, not the totals):
+
+  elementwise/norm (add/mul/gelu/rms_norm/layernorm)   ~32%
+  GEMM (gemm_kernel / addmm)                             21%
+  flash attention (cute::XeFMHAFwdKernel)                15%
+  VAE conv decode (gen_conv)                             13%
+  memcpy M2D (host -> device)                            10%
+  dtype cast (_to_copy, the fp8 -> bf16 upcast)          ~10%
+
+Compute utilization (hand-derived FLOPs vs the B70's ~184 TFLOPS bf16 XMX peak;
+the isolated big GEMM reaches ~150-177 TFLOPS, so the model runs at ~half peak):
+
+  stage-1 denoise   84 TFLOPS (46%)    -> 107 compiled (58%)
+  stage-2 denoise   92 TFLOPS (50%)    -> 111 compiled (61%)
+  theoretical floor: stage-2 3.7 s vs 7.4 s actual (compile closes ~20%)
+
+Memory bandwidth (bench_xpu_bw.py, 1 GiB bf16 tensors):
+
+  HBM reduce (read)      592.6 GB/s   (~97% of the 608 GB/s spec)
+  D2D copy (R1+W1)      1149.7 GB/s
+  add out  (R2+W1)      1720.9 GB/s
+  host -> device (H2D)    28.2 GB/s
+
+  - The denoise stages are compute-bound: the ~18.5 GB of fp8 weights are read
+    once per step at <2% of HBM peak, so HBM/PCIe sit mostly idle there.
+  - H2D is ~28 GB/s, i.e. NOT the x1 Gen1 the sysfs link attributes suggested.
+    The transformer load (~4.4 GB/s) is disk/CPU-bound and Gemma streaming
+    (~2.4 GB/s) is compute/host-bound -- neither is link-bound.
+  - CPU is idle during generation (~9% usr / 88% idle on 24 threads).
+  - The biggest untapped lever is the ~32% elementwise/norm share (fusion via
+    torch.compile); next is the fp8->bf16 upcast (~10%).
+
+  Tooling notes: `intel_gpu_top` cannot read the B70's PMU (i915-only; the B70
+  uses the `xe` driver) and `xpu-smi` only enumerated the integrated GPU on this
+  host, so use `bench_xpu_bw.py` and `torch.profiler` instead.
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video

@@ -45,6 +45,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - Single clip with `torch.compile`: `bash run_t2v_compiled.sh` (wraps the same
   script with `LTX_COMPILE=1` and the minimal oneAPI/triton environment the
   dual-GPU host needs; caches JIT artifacts in `.torch_cache/`).
+- Profiling: `torch.profiler` with CPU+XPU activities gives the per-kernel XPU
+  breakdown, and `bench_xpu_bw.py` measures HBM/H2D bandwidth. `intel_gpu_top`
+  cannot read the B70 (i915-only PMU; the B70 uses `xe`) and `xpu-smi` does not
+  enumerate it on this host.
 - Multi-clip (N videos): `.venv/bin/python run_multi_xpu.py --prompts-file
   prompts.json --job-dir OUT` (8 workers) or `run_multi_16.py` (16 workers).
   These pre-encode all prompts once via `encode_prompts.py`, then spawn
