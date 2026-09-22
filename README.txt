@@ -284,6 +284,33 @@ compiles) and inductor already fuses the hot elementwise chains
   Compile knobs (all default off/unset): LTX_COMPILE_MODE, LTX_INDUCTOR_CONFIG,
   LTX_DYNAMO_CONFIG (JSON), LTX_SEQ_DYNAMIC, LTX_FULLGRAPH (0|1).
 
+LTX-2.5 (opt-in)
+----------------
+`run_t2v_25_xpu.py` runs LTX-2.5 distilled text-to-video on a single XPU; the
+LTX-2.3 path (`run_t2v_xpu_perf.py`) stays the default.
+
+Why it needs its own runner: the official 2.5 release ships only bf16 (42 GB),
+comfy-int8-convrot (21.5 GB) and nvfp4 (18.7 GB) transformers. On a 30 GiB B70
+the bf16 does not fit and the int8-convrot / nvfp4 formats need ComfyUI /
+ltx_kernels CUDA kernels, so the only loadable form is our own fp8 cast of the
+bf16 checkpoint (~21 GB resident). The Gemma-4 text encoder (26 GB) is streamed
+with CPU offload, and the fp8 transformer is kept resident across both stages.
+
+Measured (1024x1024, 121 frames, 8+3 distilled steps, seed 42):
+  prompt-encode (Gemma-4, streamed)   ~14 s
+  transformer fp8-cast build           ~6 s
+  stage-1 denoise (8 steps)           ~14 s
+  stage-2 denoise (3 steps)           ~22 s
+  video+audio decode + mux             ~12 s
+  generation 58.5 s + mux 7.1 s; peak xpu:0 reserved 25.3 GB
+=> 2.5 is roughly 2.3 speed (same 8+3 schedule) with 2.5 quality; ~10 s slower
+   overall from the larger Gemma-4 TE and the fp8-cast build.
+
+Knobs: `LTX_KEEP_TRANSFORMER` (default 1), `LTX_DECODER_MEM_EFFICIENT` (default 0),
+`LTX_PREBUILD_TRANSFORMER` (default 0 -- concurrent Gemma-4 streaming + transformer
+build intermittently raises UR_RESULT_ERROR_DEVICE_LOST on XPU, unlike 2.3).
+`LTX_25_MODELS` points at the split pack (default /home/acm/work/models/ltx-2.5).
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video

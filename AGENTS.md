@@ -49,6 +49,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   breakdown, and `bench_xpu_bw.py` measures HBM/H2D bandwidth. `intel_gpu_top`
   cannot read the B70 (i915-only PMU; the B70 uses `xe`) and `xpu-smi` does not
   enumerate it on this host.
+- LTX-2.5 (opt-in): `.venv/bin/python run_t2v_25_xpu.py` (single XPU). The 2.5
+  bf16 transformer (42 GB) is fp8-cast at load (~21 GB) because the official
+  comfy-int8-convrot / nvfp4 variants need CUDA (`ltx_kernels`) kernels; Gemma-4
+  is streamed. 2.3 (`run_t2v_xpu_perf.py`) stays the default.
 - Multi-clip (N videos): `.venv/bin/python run_multi_xpu.py --prompts-file
   prompts.json --job-dir OUT` (8 workers) or `run_multi_16.py` (16 workers).
   These pre-encode all prompts once via `encode_prompts.py`, then spawn
