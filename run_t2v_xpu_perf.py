@@ -73,6 +73,12 @@ CDEV = torch.device("xpu", int(os.environ.get("LTX_CDEV", "1")))  # vae / decode
 # Set LTX_DECODER_MEM_EFFICIENT=1 to restore the old behavior.
 _DECODER_MEM_EFFICIENT = os.environ.get("LTX_DECODER_MEM_EFFICIENT", "0") == "1"
 
+# Experimental spatio-temporal factorized self-attention for the video stream
+# (LTX_ATTN_PATTERN=factorized, LTX_ATTN_COMBINE=mean|sum). Default "full" keeps
+# the stock dense attention. See ltx_factorized_attn.py.
+_ATTN_PATTERN = os.environ.get("LTX_ATTN_PATTERN", "full").strip().lower()
+_ATTN_COMBINE = os.environ.get("LTX_ATTN_COMBINE", "mean").strip().lower()
+
 # Optional torch.compile of the transformer blocks (LTX_COMPILE=1). Compilation
 # is only usable on this host with a clean oneAPI/triton environment and the
 # NVIDIA triton backend neutralised; see AGENTS.md / README.txt.
@@ -114,6 +120,30 @@ def _neutralise_nvidia_triton_backend() -> None:
         log.info("neutralised triton NVIDIA backend (XPU-only triton)")
     except Exception as e:  # noqa: BLE001
         log.warning("could not neutralise triton NVIDIA backend: %s", e)
+
+
+_factorized_config_cache = None
+
+
+def _factorized_configurator():
+    global _factorized_config_cache
+    if _factorized_config_cache is None:
+        import ltx_factorized_attn
+
+        _factorized_config_cache = ltx_factorized_attn.make_configurator(combine=_ATTN_COMBINE)
+    return _factorized_config_cache
+
+
+def _set_attn_grid(pixel_h: int, pixel_w: int) -> None:
+    """Set the (F, S) video grid for factorized attention (32 = VAE spatial scale)."""
+    if _ATTN_PATTERN != "factorized":
+        return
+    import ltx_factorized_attn
+
+    frames = (NUM_FRAMES - 1) // 8 + 1
+    spatial = (pixel_h // 32) * (pixel_w // 32)
+    ltx_factorized_attn.set_video_grid(frames, spatial)
+    log.info("factorized attention grid: F=%d S=%d", frames, spatial)
 
 
 def _resolve_gemma_device(spec: str) -> torch.device:
@@ -261,6 +291,7 @@ def main() -> None:
         checkpoint_path=DISTILLED_CKPT, dtype=dtype, device=TDEV,
         loras=(), quantization=quantization,
         compilation_config=_COMPILATION_CONFIG,
+        **({"model_configurator": _factorized_configurator()} if _ATTN_PATTERN == "factorized" else {}),
     )
     upsampler = VideoUpsampler(
         checkpoint_path=DISTILLED_CKPT, upsampler_path=UPSCALER_CKPT, dtype=dtype, device=CDEV,
@@ -301,6 +332,7 @@ def main() -> None:
 
     # --- Stage 1: low-res denoise on xpu:0 ---
     log.info("stage 1: %dx%d %d frames on %s", s1_w, s1_h, NUM_FRAMES, TDEV)
+    _set_attn_grid(s1_h, s1_w)
     with _Timer("stage-1 denoise (8 steps)", TDEV):
         video_state, audio_state = stage(
             denoiser=SimpleDenoiser(video_context, audio_context),
@@ -319,6 +351,7 @@ def main() -> None:
 
     # --- Stage 2: high-res refine on xpu:0 ---
     log.info("stage 2: %dx%d %d frames on %s", width, height, NUM_FRAMES, TDEV)
+    _set_attn_grid(height, width)
     with _Timer("stage-2 denoise (3 steps)", TDEV):
         video_state, audio_state = stage(
             denoiser=SimpleDenoiser(video_context, audio_context),

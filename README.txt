@@ -302,6 +302,15 @@ Dead ends (measured, reverted)
   a ~130 s cold compile) -- eager oneDNN convs are faster.
 - Compile shape/inductor variants: `fullgraph=True` compiles (no graph breaks
   to fix); `seq_dim_dynamic=False` helps stage-1 but hurts stage-2, net worse.
+- Spatio-temporal factorized self-attention (spatial within each frame +
+  temporal across frames; two dense flash SDPA passes, reshape-only, no sparse
+  kernel): still correct by construction (F=1/S=1 reduce to full exactly) and
+  **26% faster stage-2 (22.1 -> 16.2 s)**, but the fidelity gate fails badly --
+  vs full attention on 3 prompts, PSNR 7-10 dB and LPIPS 0.75-0.83 (gate was
+  PSNR>=24 dB / LPIPS<=0.10). The distilled model needs full 3D attention; a
+  static factorization is not a usable approximation. Kept opt-in for
+  reference: `LTX_ATTN_PATTERN=factorized` (+ `LTX_ATTN_COMBINE=mean|sum`),
+  default is full.
 
 Text-encoder (TE) analysis and Phase 4 A/B
 ------------------------------------------

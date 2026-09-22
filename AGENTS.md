@@ -108,6 +108,11 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `LTX_INDUCTOR_CONFIG`/`LTX_DYNAMO_CONFIG` (JSON), `LTX_SEQ_DYNAMIC`,
   `LTX_FULLGRAPH`. Measured dead ends: compiling the VAE decoder is slower than
   eager oneDNN, and `seq_dim_dynamic=False` is net worse (see README.txt).
+- Experimental quantized attention: `LTX_ATTN_PATTERN=factorized`
+  (`LTX_ATTN_COMBINE=mean|sum`, default `full`) swaps the video self-attention
+  for a spatio-temporal factorization (`ltx_factorized_attn.py`). It is ~26%
+  faster on stage-2 but **fails fidelity badly** (PSNR 7-10 dB, LPIPS ~0.8 vs
+  full); do not enable it for real generation.
 - `LTX_FRAMES` must be `8k+1`; 73 hangs the XPU driver (see
   `run_t2v_xpu_perf.py:63`).
 - Prompts for encode: `LTX_PROMPTS_FILE` (JSON array) or stdin JSON.
