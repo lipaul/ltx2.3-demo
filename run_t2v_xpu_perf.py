@@ -224,7 +224,7 @@ def main() -> None:
     height, width = STAGE1_H * 2, STAGE1_W * 2
     assert_resolution(height=height, width=width, is_two_stage=True)
     dtype = torch.bfloat16
-    torch.set_num_threads(64)  # CPU Gemma forward uses many cores
+    torch.set_num_threads(os.cpu_count() or 8)  # CPU-side work (Gemma streaming, mux)
 
     log.info("devices: transformer=%s  vae/decoders=%s  text-encoder=%s", TDEV, CDEV, GDEV)
     log.info("target: %dx%d, %d frames @ %.0ffps (stage1 %dx%d)", width, height, NUM_FRAMES, FRAME_RATE, STAGE1_W, STAGE1_H)

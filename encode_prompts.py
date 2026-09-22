@@ -103,7 +103,7 @@ def _build_resident_fp8_encoder(device: torch.device) -> PromptEncoder:
 
 @torch.no_grad()
 def main() -> None:
-    torch.set_num_threads(64)
+    torch.set_num_threads(os.cpu_count() or 8)
 
     # Read prompts: from LTX_PROMPTS_FILE env, or stdin JSON, or default
     prompts_json = os.environ.get("LTX_PROMPTS_FILE", "")
