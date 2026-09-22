@@ -53,6 +53,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   bf16 transformer (42 GB) is fp8-cast at load (~21 GB) because the official
   comfy-int8-convrot / nvfp4 variants need CUDA (`ltx_kernels`) kernels; Gemma-4
   is streamed. 2.3 (`run_t2v_xpu_perf.py`) stays the default.
+- LTX-2.5 server: `bash start_ltx_server_25.sh` (127.0.0.1:8002) ->
+  `ltx_server_25.py`, same design as `ltx_server.py` but single-path via
+  `run_t2v_25_xpu.py` (`ModelProfile(pre_encode=False, device_pairs=False,
+  multi_mode=1)`).
 - Multi-clip (N videos): `.venv/bin/python run_multi_xpu.py --prompts-file
   prompts.json --job-dir OUT` (8 workers) or `run_multi_16.py` (16 workers).
   These pre-encode all prompts once via `encode_prompts.py`, then spawn

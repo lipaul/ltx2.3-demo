@@ -121,7 +121,12 @@ class ModelProfile:
     default_width: int
     default_height: int
     default_frames: int
-    multi_mode: int = 8  # 8 or 16 concurrent videos
+    multi_mode: int = 8  # videos per job: 8/16 for LTX-2.3, 1 for single-path 2.5
+    # Runner selection. LTX-2.3 pre-encodes prompts (shared Gemma) and pairs the
+    # 32 XPUs; single-path LTX-2.5 encodes internally (streamed Gemma-4) on one XPU.
+    generation_script: str = GENERATION_SCRIPT
+    pre_encode: bool = True
+    device_pairs: bool = True
 
 
 @dataclass(frozen=True)
@@ -350,12 +355,18 @@ class MultiLtxWorker:
     """Background worker that directly spawns encode_prompts.py + N generation workers."""
 
     def __init__(self, store: JobStore, output_dir: Path, state: ServerState,
-                 max_workers: int = 8) -> None:
+                 max_workers: int = 8, *,
+                 generation_script: str = GENERATION_SCRIPT,
+                 pre_encode: bool = True,
+                 device_pairs: bool = True) -> None:
         self._store = store
         self._output_dir = output_dir
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._state = state
         self._max_workers = max_workers
+        self._generation_script = generation_script
+        self._pre_encode = pre_encode
+        self._device_pairs = device_pairs
         self._stagger = 1
         self._queue: queue.Queue[dict] = queue.Queue(maxsize=4)
         self._thread: threading.Thread | None = None
@@ -409,76 +420,88 @@ class MultiLtxWorker:
                 json.dump(prompts, f)
 
             try:
-                # Step 1: encode prompts (shared Gemma)
-                self._state.multi_append_log(
-                    f"[step 1] Encoding prompts via Gemma ({GEMMA_DEVICE}, offload={GEMMA_OFFLOAD})..."
-                )
-                encode_t0 = time.perf_counter()
+                # Step 1: encode prompts (shared Gemma). Skipped for single-path
+                # runners (LTX-2.5) that build/stream their own text encoder.
                 embeddings_dir = None
-                if ENCODER_SERVICE and _gemma_device_is_xpu(GEMMA_DEVICE):
-                    logger.info("Step 1/%d: encoding %d prompts via encoder service", n + 1, n)
-                    try:
-                        if _ensure_encoder_service():
-                            embeddings_dir = _encode_via_service(
-                                prompts, os.path.join(job_dir, "embeddings")
-                            )
-                            self._state.multi_append_log(
-                                f"[step 1] Done (service), embeddings in {embeddings_dir}"
-                            )
-                        else:
-                            logger.warning("encoder service unavailable; falling back to subprocess")
-                    except Exception:
-                        logger.exception("encoder service failed; falling back to subprocess")
-                        embeddings_dir = None
-                if embeddings_dir is None:
-                    logger.info("Step 1/%d: encoding %d prompts via encode_prompts.py", n + 1, n)
-                    env = os.environ.copy()
-                    env.update({
-                        "LTX_PROMPTS_FILE": prompts_file,
-                        "LTX_GEMMA_DEVICE": GEMMA_DEVICE,
-                        "LTX_GEMMA_OFFLOAD": GEMMA_OFFLOAD,
-                        "HF_HUB_OFFLINE": "1",
-                        "TOKENIZERS_PARALLELISM": "false",
-                    })
-                    enc_result = subprocess.run(
-                        [LTX23_ENV_PYTHON, "-u", str(LTX23_RUN_DIR / "encode_prompts.py")],
-                        capture_output=True, text=True, timeout=600,
-                        env=env, cwd=str(LTX23_RUN_DIR),
+                if self._pre_encode:
+                    self._state.multi_append_log(
+                        f"[step 1] Encoding prompts via Gemma ({GEMMA_DEVICE}, offload={GEMMA_OFFLOAD})..."
                     )
-                    if enc_result.returncode != 0:
-                        raise RuntimeError(
-                            f"encode_prompts.py failed: {(enc_result.stderr or '')[-500:]}"
+                    encode_t0 = time.perf_counter()
+                    if ENCODER_SERVICE and _gemma_device_is_xpu(GEMMA_DEVICE):
+                        logger.info("Step 1/%d: encoding %d prompts via encoder service", n + 1, n)
+                        try:
+                            if _ensure_encoder_service():
+                                embeddings_dir = _encode_via_service(
+                                    prompts, os.path.join(job_dir, "embeddings")
+                                )
+                                self._state.multi_append_log(
+                                    f"[step 1] Done (service), embeddings in {embeddings_dir}"
+                                )
+                            else:
+                                logger.warning("encoder service unavailable; falling back to subprocess")
+                        except Exception:
+                            logger.exception("encoder service failed; falling back to subprocess")
+                            embeddings_dir = None
+                    if embeddings_dir is None:
+                        logger.info("Step 1/%d: encoding %d prompts via encode_prompts.py", n + 1, n)
+                        env = os.environ.copy()
+                        env.update({
+                            "LTX_PROMPTS_FILE": prompts_file,
+                            "LTX_GEMMA_DEVICE": GEMMA_DEVICE,
+                            "LTX_GEMMA_OFFLOAD": GEMMA_OFFLOAD,
+                            "HF_HUB_OFFLINE": "1",
+                            "TOKENIZERS_PARALLELISM": "false",
+                        })
+                        enc_result = subprocess.run(
+                            [LTX23_ENV_PYTHON, "-u", str(LTX23_RUN_DIR / "encode_prompts.py")],
+                            capture_output=True, text=True, timeout=600,
+                            env=env, cwd=str(LTX23_RUN_DIR),
                         )
-                    embeddings_dir = (enc_result.stdout or "").strip().splitlines()[-1]
-                    self._state.multi_append_log(f"[step 1] Done, embeddings in {embeddings_dir}")
-                logger.info("Embeddings dir: %s", embeddings_dir)
-                logger.info("Step 1 done in %.1f s", time.perf_counter() - encode_t0)
+                        if enc_result.returncode != 0:
+                            raise RuntimeError(
+                                f"encode_prompts.py failed: {(enc_result.stderr or '')[-500:]}"
+                            )
+                        embeddings_dir = (enc_result.stdout or "").strip().splitlines()[-1]
+                        self._state.multi_append_log(f"[step 1] Done, embeddings in {embeddings_dir}")
+                    logger.info("Embeddings dir: %s", embeddings_dir)
+                    logger.info("Step 1 done in %.1f s", time.perf_counter() - encode_t0)
 
                 # Step 2: spawn generation workers with stagger
                 self._state.multi_append_log(f"[step 2] Spawning {n} workers...")
                 logger.info("Step 2/%d: spawning %d workers (staggered)", n + 1, n)
                 processes: list[dict] = []
                 for i in range(n):
-                    # device assignment: pairs (0,1), (2,3), … (30,31)
+                    # device assignment: pairs (0,1), (2,3), … (30,31); single
+                    # runners use one XPU (the worker sets its own LTX_TDEV).
                     tdev = i * 2
                     cdev = i * 2 + 1
+                    dev_label = f"xpu:({tdev},{cdev})" if self._device_pairs else "xpu:0"
                     output_path = os.path.join(job_dir, f"video_{i}.mp4")
                     log_path = os.path.join(job_dir, f"video_{i}.log")
 
                     env = os.environ.copy()
-                    env.update({
-                        "LTX_TDEV": str(tdev),
-                        "LTX_CDEV": str(cdev),
-                        "LTX_PROMPT": prompts[i],
-                        "LTX_OUTPUT_PATH": output_path,
-                        "LTX_EMBEDDINGS_PATH": os.path.join(embeddings_dir, f"embeddings_{i}.pt"),
-                        "LTX_GEMMA_DEVICE": "cpu",
-                        "HF_HUB_OFFLINE": "1",
-                        "TOKENIZERS_PARALLELISM": "false",
-                    })
+                    if self._device_pairs:
+                        env.update({
+                            "LTX_TDEV": str(tdev),
+                            "LTX_CDEV": str(cdev),
+                            "LTX_PROMPT": prompts[i],
+                            "LTX_OUTPUT_PATH": output_path,
+                            "LTX_EMBEDDINGS_PATH": os.path.join(embeddings_dir, f"embeddings_{i}.pt"),
+                            "LTX_GEMMA_DEVICE": "cpu",
+                            "HF_HUB_OFFLINE": "1",
+                            "TOKENIZERS_PARALLELISM": "false",
+                        })
+                    else:
+                        env.update({
+                            "LTX_PROMPT": prompts[i],
+                            "LTX_OUTPUT_PATH": output_path,
+                            "HF_HUB_OFFLINE": "1",
+                            "TOKENIZERS_PARALLELISM": "false",
+                        })
                     log_file = open(log_path, "w")
                     proc = subprocess.Popen(
-                        [LTX23_ENV_PYTHON, "-u", GENERATION_SCRIPT],
+                        [LTX23_ENV_PYTHON, "-u", self._generation_script],
                         cwd=str(LTX23_RUN_DIR),
                         env=env,
                         stdout=log_file,
@@ -488,9 +511,9 @@ class MultiLtxWorker:
                         "idx": i, "proc": proc, "log_file": log_file,
                         "output_path": output_path, "log_path": log_path,
                     })
-                    self._state.multi_update_worker(i, "spawned", f"pid={proc.pid} xpu:({tdev},{cdev})")
-                    self._state.multi_append_log(f"  worker {i+1}/{n}  pid={proc.pid}  xpu:({tdev},{cdev})")
-                    logger.info("  worker %d/%d  pid=%d  xpu:(%d,%d)", i + 1, n, proc.pid, tdev, cdev)
+                    self._state.multi_update_worker(i, "spawned", f"pid={proc.pid} {dev_label}")
+                    self._state.multi_append_log(f"  worker {i+1}/{n}  pid={proc.pid}  {dev_label}")
+                    logger.info("  worker %d/%d  pid=%d  %s", i + 1, n, proc.pid, dev_label)
 
                     # stagger between spawns to avoid XPU driver race
                     if i < n - 1:
@@ -858,18 +881,16 @@ connectSSE();
 
 
 def _generate_prompts_html(n: int) -> str:
-    """Generate the multi-prompt textarea grid for *n* prompts (8 or 16)."""
-    if n <= 8:
-        cols = 2
-        rows_per = n // cols
-    else:
-        cols = 4
-        rows_per = n // cols
+    """Generate the prompt textarea grid for *n* prompts (1, 8 or 16)."""
+    cols = 1 if n <= 1 else (2 if n <= 8 else 4)
+    rows_per = -(-n // cols)  # ceil
     parts = ['<div class="multi-grid">']
     for c in range(cols):
         parts.append('<div class="multi-prompts">')
         for r in range(rows_per):
             i = c * rows_per + r
+            if i >= n:
+                break
             parts.append(
                 f'<div><label>Prompt {i+1}</label>'
                 f'<textarea class="mp" data-idx="{i}"></textarea></div>'
@@ -936,6 +957,9 @@ def create_server(profile: ModelProfile) -> ServerApplication:
             output_dir=settings.output_dir,
             state=state,
             max_workers=profile.multi_mode,
+            generation_script=profile.generation_script,
+            pre_encode=profile.pre_encode,
+            device_pairs=profile.device_pairs,
         )
         multi_worker.start()
         app.state.multi_worker = multi_worker

@@ -311,6 +311,24 @@ Knobs: `LTX_KEEP_TRANSFORMER` (default 1), `LTX_DECODER_MEM_EFFICIENT` (default 
 build intermittently raises UR_RESULT_ERROR_DEVICE_LOST on XPU, unlike 2.3).
 `LTX_25_MODELS` points at the split pack (default /home/acm/work/models/ltx-2.5).
 
+LTX-2.5 web server (opt-in)
+---------------------------
+`start_ltx_server_25.sh` -> `ltx_server_25.py` reuses the 2.3 server design
+(FastAPI + bearer auth + SSE + SQLite history + HTML UI) but runs single-path:
+one prompt, one video per job, one XPU, via `run_t2v_25_xpu.py`. Defaults to
+127.0.0.1:8002 (the 2.3 server stays on 8001); set `LTX_HOST=0.0.0.0` and
+`LTX_API_TOKEN` for LAN access.
+
+  ./start_ltx_server_25.sh
+  curl -s -X POST http://127.0.0.1:8002/api/multi-jobs \
+    -H 'Content-Type: application/json' -d '{"prompts":["..."]}'
+
+The API is unchanged (`/api/multi-jobs`, `/api/events`, `.../videos/0`). Jobs
+run one at a time (2.5 needs the whole 30 GiB). Each job reloads the fp8
+transformer (~6 s) and re-streams Gemma-4 (~14 s) -- there is no gemma4
+persistent encoder service (the 2.3 T3 service is gemma3-only). The video
+endpoint is unauthenticated, as in 2.3.
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video
