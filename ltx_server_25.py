@@ -23,6 +23,7 @@ PROFILE = ModelProfile(
     generation_script=str(HERE / "run_t2v_25_xpu.py"),
     pre_encode=False,
     device_pairs=False,
+    retries=1,  # 2.5 model loads occasionally segfault transiently on XPU
 )
 
 server = create_server(PROFILE)

@@ -331,6 +331,11 @@ transformer (~6 s) and re-streams Gemma-4 (~14 s) -- there is no gemma4
 persistent encoder service (the 2.3 T3 service is gemma3-only). The video
 endpoint is unauthenticated, as in 2.3.
 
+Workers occasionally die with SIGSEGV (rc=-11) during the Gemma-4 load on XPU
+(intermittent, driver-state related). The 2.5 profile sets `retries=1`, so the
+job is re-run once automatically; the job error reports the worker rc. Persistent
+failures across retries usually mean the XPU driver needs a cold boot.
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video

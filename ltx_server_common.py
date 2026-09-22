@@ -128,6 +128,9 @@ class ModelProfile:
     generation_script: str = GENERATION_SCRIPT
     pre_encode: bool = True
     device_pairs: bool = True
+    # Retry a job this many times if a worker dies (e.g. a transient XPU driver
+    # segfault during model load). 0 disables retries (LTX-2.3 default).
+    retries: int = 0
 
 
 @dataclass(frozen=True)
@@ -359,7 +362,8 @@ class MultiLtxWorker:
                  max_workers: int = 8, *,
                  generation_script: str = GENERATION_SCRIPT,
                  pre_encode: bool = True,
-                 device_pairs: bool = True) -> None:
+                 device_pairs: bool = True,
+                 retries: int = 0) -> None:
         self._store = store
         self._output_dir = output_dir
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -368,6 +372,7 @@ class MultiLtxWorker:
         self._generation_script = generation_script
         self._pre_encode = pre_encode
         self._device_pairs = device_pairs
+        self._retries = retries
         self._stagger = 1
         self._queue: queue.Queue[dict] = queue.Queue(maxsize=4)
         self._thread: threading.Thread | None = None
@@ -396,6 +401,104 @@ class MultiLtxWorker:
 
     def submit(self, task: dict) -> None:
         self._queue.put_nowait(task)
+
+    def _spawn_and_wait(self, job_dir: str, prompts: list[str], n: int,
+                        embeddings_dir: str | None) -> list[dict]:
+        """Spawn the N generation workers and wait, returning per-worker results."""
+        # Step 2: spawn generation workers with stagger
+        self._state.multi_append_log(f"[step 2] Spawning {n} workers...")
+        logger.info("Step 2/%d: spawning %d workers (staggered)", n + 1, n)
+        processes: list[dict] = []
+        for i in range(n):
+            # device assignment: pairs (0,1), (2,3), … (30,31); single
+            # runners use one XPU (the worker sets its own LTX_TDEV).
+            tdev = i * 2
+            cdev = i * 2 + 1
+            dev_label = f"xpu:({tdev},{cdev})" if self._device_pairs else "xpu:0"
+            output_path = os.path.join(job_dir, f"video_{i}.mp4")
+            log_path = os.path.join(job_dir, f"video_{i}.log")
+
+            env = os.environ.copy()
+            if self._device_pairs:
+                env.update({
+                    "LTX_TDEV": str(tdev),
+                    "LTX_CDEV": str(cdev),
+                    "LTX_PROMPT": prompts[i],
+                    "LTX_OUTPUT_PATH": output_path,
+                    "LTX_EMBEDDINGS_PATH": os.path.join(embeddings_dir, f"embeddings_{i}.pt"),
+                    "LTX_GEMMA_DEVICE": "cpu",
+                    "HF_HUB_OFFLINE": "1",
+                    "TOKENIZERS_PARALLELISM": "false",
+                })
+            else:
+                env.update({
+                    "LTX_PROMPT": prompts[i],
+                    "LTX_OUTPUT_PATH": output_path,
+                    "HF_HUB_OFFLINE": "1",
+                    "TOKENIZERS_PARALLELISM": "false",
+                })
+            log_file = open(log_path, "w")
+            proc = subprocess.Popen(
+                [LTX23_ENV_PYTHON, "-u", self._generation_script],
+                cwd=str(LTX23_RUN_DIR),
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append({
+                "idx": i, "proc": proc, "log_file": log_file,
+                "output_path": output_path, "log_path": log_path,
+            })
+            self._state.multi_update_worker(i, "spawned", f"pid={proc.pid} {dev_label}")
+            self._state.multi_append_log(f"  worker {i+1}/{n}  pid={proc.pid}  {dev_label}")
+            logger.info("  worker %d/%d  pid=%d  %s", i + 1, n, proc.pid, dev_label)
+
+            # stagger between spawns to avoid XPU driver race
+            if i < n - 1:
+                time.sleep(self._stagger)
+
+        # Step 3: wait for all workers with periodic log tailing
+        self._state.multi_append_log("[step 3] Waiting for all workers...")
+        logger.info("Waiting for %d workers...", n)
+        remaining = list(processes)
+        results = []
+        while remaining:
+            for info in list(remaining):
+                rc = info["proc"].poll()
+                if rc is not None:
+                    remaining.remove(info)
+                    info["log_file"].close()
+                    exists = os.path.isfile(info["output_path"])
+                    size = os.path.getsize(info["output_path"]) if exists else 0
+                    status = "OK" if rc == 0 and exists and size > 0 else "FAIL"
+                    results.append({
+                        "idx": info["idx"], "rc": rc, "exists": exists,
+                        "size": size, "status": status,
+                        "output_path": info["output_path"],
+                    })
+                    self._state.multi_update_worker(info["idx"], "done" if status == "OK" else "failed")
+                    self._state.multi_append_log(
+                        f"  worker {info['idx']+1}/{n} done  {'OK' if status == 'OK' else f'rc={rc}'}  "
+                        f"{info['output_path']} ({size/1024**2:.1f} MB)" if exists else "no file"
+                    )
+                    logger.info("  worker %d/%d done  rc=%d  %s  %s  (%s)",
+                                info["idx"] + 1, n, rc,
+                                "OK" if status == "OK" else f"rc={rc}",
+                                info["output_path"],
+                                f"{size / 1024**2:.1f} MB" if exists else "no file")
+            # read tail of each running worker's log
+            if remaining:
+                for info in remaining:
+                    try:
+                        with open(info["log_path"]) as lf:
+                            lines = lf.read().strip().splitlines()
+                            last = lines[-1] if lines else ""
+                            if last:
+                                self._state.multi_update_worker(info["idx"], "running", last[-120:])
+                    except OSError:
+                        pass
+                time.sleep(2)
+        return results
 
     def _run(self) -> None:
         logger.info("Multi-worker thread started")
@@ -468,104 +571,25 @@ class MultiLtxWorker:
                     logger.info("Embeddings dir: %s", embeddings_dir)
                     logger.info("Step 1 done in %.1f s", time.perf_counter() - encode_t0)
 
-                # Step 2: spawn generation workers with stagger
-                self._state.multi_append_log(f"[step 2] Spawning {n} workers...")
-                logger.info("Step 2/%d: spawning %d workers (staggered)", n + 1, n)
-                processes: list[dict] = []
-                for i in range(n):
-                    # device assignment: pairs (0,1), (2,3), … (30,31); single
-                    # runners use one XPU (the worker sets its own LTX_TDEV).
-                    tdev = i * 2
-                    cdev = i * 2 + 1
-                    dev_label = f"xpu:({tdev},{cdev})" if self._device_pairs else "xpu:0"
-                    output_path = os.path.join(job_dir, f"video_{i}.mp4")
-                    log_path = os.path.join(job_dir, f"video_{i}.log")
-
-                    env = os.environ.copy()
-                    if self._device_pairs:
-                        env.update({
-                            "LTX_TDEV": str(tdev),
-                            "LTX_CDEV": str(cdev),
-                            "LTX_PROMPT": prompts[i],
-                            "LTX_OUTPUT_PATH": output_path,
-                            "LTX_EMBEDDINGS_PATH": os.path.join(embeddings_dir, f"embeddings_{i}.pt"),
-                            "LTX_GEMMA_DEVICE": "cpu",
-                            "HF_HUB_OFFLINE": "1",
-                            "TOKENIZERS_PARALLELISM": "false",
-                        })
-                    else:
-                        env.update({
-                            "LTX_PROMPT": prompts[i],
-                            "LTX_OUTPUT_PATH": output_path,
-                            "HF_HUB_OFFLINE": "1",
-                            "TOKENIZERS_PARALLELISM": "false",
-                        })
-                    log_file = open(log_path, "w")
-                    proc = subprocess.Popen(
-                        [LTX23_ENV_PYTHON, "-u", self._generation_script],
-                        cwd=str(LTX23_RUN_DIR),
-                        env=env,
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                    )
-                    processes.append({
-                        "idx": i, "proc": proc, "log_file": log_file,
-                        "output_path": output_path, "log_path": log_path,
-                    })
-                    self._state.multi_update_worker(i, "spawned", f"pid={proc.pid} {dev_label}")
-                    self._state.multi_append_log(f"  worker {i+1}/{n}  pid={proc.pid}  {dev_label}")
-                    logger.info("  worker %d/%d  pid=%d  %s", i + 1, n, proc.pid, dev_label)
-
-                    # stagger between spawns to avoid XPU driver race
-                    if i < n - 1:
-                        time.sleep(self._stagger)
-
-                # Step 3: wait for all workers with periodic log tailing
-                self._state.multi_append_log("[step 3] Waiting for all workers...")
-                logger.info("Waiting for %d workers...", n)
-                remaining = list(processes)
-                results = []
-                while remaining:
-                    for info in list(remaining):
-                        rc = info["proc"].poll()
-                        if rc is not None:
-                            remaining.remove(info)
-                            info["log_file"].close()
-                            exists = os.path.isfile(info["output_path"])
-                            size = os.path.getsize(info["output_path"]) if exists else 0
-                            status = "OK" if rc == 0 and exists and size > 0 else "FAIL"
-                            results.append({
-                                "idx": info["idx"], "rc": rc, "exists": exists,
-                                "size": size, "status": status,
-                                "output_path": info["output_path"],
-                            })
-                            self._state.multi_update_worker(info["idx"], "done" if status == "OK" else "failed")
-                            self._state.multi_append_log(
-                                f"  worker {info['idx']+1}/{n} done  {'OK' if status == 'OK' else f'rc={rc}'}  "
-                                f"{info['output_path']} ({size/1024**2:.1f} MB)" if exists else "no file"
-                            )
-                            logger.info("  worker %d/%d done  rc=%d  %s  %s  (%s)",
-                                        info["idx"] + 1, n, rc,
-                                        "OK" if status == "OK" else f"rc={rc}",
-                                        info["output_path"],
-                                        f"{size / 1024**2:.1f} MB" if exists else "no file")
-                    # read tail of each running worker's log
-                    if remaining:
-                        for info in remaining:
-                            try:
-                                with open(info["log_path"]) as lf:
-                                    lines = lf.read().strip().splitlines()
-                                    last = lines[-1] if lines else ""
-                                    if last:
-                                        self._state.multi_update_worker(info["idx"], "running", last[-120:])
-                            except OSError:
-                                pass
-                        time.sleep(2)
+                # Step 2+3: spawn + wait, retrying on transient worker crashes
+                # (e.g. an XPU driver segfault during model load).
+                attempts = self._retries + 1
+                results: list[dict] = []
+                ok = 0
+                for attempt in range(attempts):
+                    if attempt:
+                        self._state.multi_append_log(
+                            f"[retry] {ok}/{n} ok; retrying (attempt {attempt + 1}/{attempts})"
+                        )
+                        logger.warning("job %s: retry %d/%d", job_id, attempt + 1, attempts)
+                    results = self._spawn_and_wait(job_dir, prompts, n, embeddings_dir)
+                    ok = sum(1 for r in results if r["status"] == "OK")
+                    if ok == n:
+                        break
 
                 with open(os.path.join(job_dir, "results.json"), "w") as f:
                     json.dump(results, f, indent=2)
 
-                ok = sum(1 for r in results if r["status"] == "OK")
                 if ok == n:
                     self._store.mark_multi_succeeded(job_id, job_dir)
                     videos = [f"/api/multi-jobs/{job_id}/videos/{i}" for i in range(n)]
@@ -573,7 +597,8 @@ class MultiLtxWorker:
                     self._state.multi_append_log(f"[done] {ok}/{n} workers succeeded")
                     logger.info("Multi-job %s: %d/%d succeeded", job_id, ok, n)
                 else:
-                    raise RuntimeError(f"{ok}/{n} workers succeeded")
+                    rc_list = [r["rc"] for r in results if r["status"] != "OK"]
+                    raise RuntimeError(f"{ok}/{n} workers succeeded (worker rc: {rc_list})")
             except Exception as e:
                 logger.exception("Multi-job %s failed", job_id)
                 self._store.mark_multi_failed(job_id, str(e))
@@ -961,6 +986,7 @@ def create_server(profile: ModelProfile) -> ServerApplication:
             generation_script=profile.generation_script,
             pre_encode=profile.pre_encode,
             device_pairs=profile.device_pairs,
+            retries=profile.retries,
         )
         multi_worker.start()
         app.state.multi_worker = multi_worker

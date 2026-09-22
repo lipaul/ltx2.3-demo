@@ -55,7 +55,8 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - LTX-2.5 server: `bash start_ltx_server_25.sh` (127.0.0.1:8002) ->
   `ltx_server_25.py`, same design as `ltx_server.py` but single-path via
   `run_t2v_25_xpu.py` (`ModelProfile(pre_encode=False, device_pairs=False,
-  multi_mode=1)`).
+  multi_mode=1, retries=1)`). `retries` re-runs a job whose worker died with a
+  signal (intermittent XPU segfault during Gemma-4 load).
 - Multi-clip (N videos): `.venv/bin/python run_multi_xpu.py --prompts-file
   prompts.json --job-dir OUT` (8 workers) or `run_multi_16.py` (16 workers).
   These pre-encode all prompts once via `encode_prompts.py`, then spawn
