@@ -76,11 +76,28 @@ _DECODER_MEM_EFFICIENT = os.environ.get("LTX_DECODER_MEM_EFFICIENT", "0") == "1"
 # Optional torch.compile of the transformer blocks (LTX_COMPILE=1). Compilation
 # is only usable on this host with a clean oneAPI/triton environment and the
 # NVIDIA triton backend neutralised; see AGENTS.md / README.txt.
+# LTX_COMPILE_MODE / LTX_INDUCTOR_CONFIG / LTX_DYNAMO_CONFIG / LTX_SEQ_DYNAMIC /
+# LTX_FULLGRAPH override CompilationConfig fields (JSON for the *_CONFIG ones,
+# 0|1 for the rest).
 _COMPILATION_CONFIG = None
 if os.environ.get("LTX_COMPILE", "0") == "1":
+    import json as _json
+
     from ltx_core.model.transformer.compiling import CompilationConfig
 
-    _COMPILATION_CONFIG = CompilationConfig()
+    _compile_kwargs: dict = {}
+    if os.environ.get("LTX_COMPILE_MODE"):
+        _compile_kwargs["mode"] = os.environ["LTX_COMPILE_MODE"]
+    if os.environ.get("LTX_INDUCTOR_CONFIG"):
+        _compile_kwargs["inductor_config"] = _json.loads(os.environ["LTX_INDUCTOR_CONFIG"])
+    if os.environ.get("LTX_DYNAMO_CONFIG"):
+        _compile_kwargs["dynamo_config"] = _json.loads(os.environ["LTX_DYNAMO_CONFIG"])
+    if os.environ.get("LTX_SEQ_DYNAMIC"):
+        _compile_kwargs["seq_dim_dynamic"] = os.environ["LTX_SEQ_DYNAMIC"] == "1"
+    if os.environ.get("LTX_FULLGRAPH"):
+        _compile_kwargs["fullgraph"] = os.environ["LTX_FULLGRAPH"] == "1"
+    _COMPILATION_CONFIG = CompilationConfig(**_compile_kwargs)
+    log.info("CompilationConfig: %s", _COMPILATION_CONFIG)
 
 
 def _neutralise_nvidia_triton_backend() -> None:

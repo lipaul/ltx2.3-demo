@@ -256,6 +256,34 @@ Memory bandwidth (bench_xpu_bw.py, 1 GiB bf16 tensors):
   uses the `xe` driver) and `xpu-smi` only enumerated the integrated GPU on this
   host, so use `bench_xpu_bw.py` and `torch.profiler` instead.
 
+Operator-level acceleration (measured)
+--------------------------------------
+With `LTX_COMPILE=1` the model has no Dynamo graph breaks (`fullgraph=True`
+compiles) and inductor already fuses the hot elementwise chains
+(`triton_red_fused__fused_rms_norm__to_copy_add_mul_sl...`,
+`triton_poi_fused_gelu_*`, `triton_poi_fused__to_copy_*`), so most of the eager
+~32% elementwise share is captured by compile. Sweep results:
+
+  - GEMM is near XMX peak in isolation (~150-177 TFLOPS) but denoise runs at
+    ~84-111 TFLOPS end-to-end (46-61% of ~184). The gap is attention (~55% peak
+    for the cute XeFMHA kernel) plus the residual elementwise mix, not raw GEMM.
+  - fp8 native GEMM is unavailable (`torch._scaled_mm` unimplemented on XPU) and
+    a bf16 cache of the whole transformer (37 GB) does not fit 30 GB, so the
+    ~10% fp8 -> bf16 upcast cannot be removed cheaply.
+  - Compiling the conv VAE decoder is a LOSS: warm mux 10.85 s vs 7.05 s
+    (eager oneDNN convs win), with a ~130 s cold compile.
+  - `seq_dim_dynamic=False` helps stage-1 (14.05 -> 11.95 s) but hurts stage-2
+    (18.30 -> 20.46 s); net slightly worse, so the dynamic default stays.
+  - Kernel-launch overhead is small (~16k triton + 19k gemm launches per run),
+    so XPU graph capture is not a promising lever.
+
+  => On this torch/XPU stack the operator graph is close to its practical
+     limit; the remaining gap is attention-kernel efficiency and vendor
+     (oneDNN) coverage, not something the harness can fuse away.
+
+  Compile knobs (all default off/unset): LTX_COMPILE_MODE, LTX_INDUCTOR_CONFIG,
+  LTX_DYNAMO_CONFIG (JSON), LTX_SEQ_DYNAMIC, LTX_FULLGRAPH (0|1).
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video
@@ -270,6 +298,10 @@ Dead ends (measured, reverted)
   now patches fp8_cast.py to make the fold prefix-aware, so compile works.
   The remaining obstacle is environmental (triton dual-driver + SYCL version),
   handled by run_t2v_compiled.sh.
+- torch.compile on the conv VAE decoder: warm mux 10.85 s vs 7.05 s eager (plus
+  a ~130 s cold compile) -- eager oneDNN convs are faster.
+- Compile shape/inductor variants: `fullgraph=True` compiles (no graph breaks
+  to fix); `seq_dim_dynamic=False` helps stage-1 but hurts stage-2, net worse.
 
 Text-encoder (TE) analysis and Phase 4 A/B
 ------------------------------------------

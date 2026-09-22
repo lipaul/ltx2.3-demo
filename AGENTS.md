@@ -104,7 +104,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   transformer while the prompt encodes), `LTX_DECODER_MEM_EFFICIENT` (default 0;
   the plain conv decode is ~1.8x faster on XPU), and `LTX_COMPILE` (default 0;
   torch.compile the transformer — launch via `run_t2v_compiled.sh`, which also
-  sets the clean env compile needs).
+  sets the clean env compile needs). Compile tuning: `LTX_COMPILE_MODE`,
+  `LTX_INDUCTOR_CONFIG`/`LTX_DYNAMO_CONFIG` (JSON), `LTX_SEQ_DYNAMIC`,
+  `LTX_FULLGRAPH`. Measured dead ends: compiling the VAE decoder is slower than
+  eager oneDNN, and `seq_dim_dynamic=False` is net worse (see README.txt).
 - `LTX_FRAMES` must be `8k+1`; 73 hangs the XPU driver (see
   `run_t2v_xpu_perf.py:63`).
 - Prompts for encode: `LTX_PROMPTS_FILE` (JSON array) or stdin JSON.
