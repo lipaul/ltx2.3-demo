@@ -26,10 +26,14 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   script currently applies). Check `git -C LTX-2 status` before assuming.
 - Model weights live in gitignored `models/` (~30 GB); fetch with
   `uv run download.py`. Scripts set `HF_HUB_OFFLINE=1`.
-- **Trap:** `run.sh`, `run_b.sh`, `run_multi.sh`, `start_ltx_server.sh` all
-  exec a hardcoded `/home/lm/paul/ltx23-env/bin/python` that does not exist.
-  Ignore their interpreter lines; use `.venv/bin/python` (or the README.txt
-  commands).
+- **Trap:** `run.sh`, `run_b.sh`, `run_multi.sh`, `start_ltx_server.sh` exec a
+  hardcoded `/home/lm/paul/ltx23-env/bin/python` that does not exist. Ignore
+  their interpreter lines; use `.venv/bin/python` (or the README.txt commands).
+  `run_multi_xpu.py`/`run_multi_16.py` default to the same dead path but honor
+  `LTX_PYTHON`; the server's own subprocesses use `<repo>/.venv/bin/python`.
+- No test, lint, typecheck, or CI config exists in-repo. Verify changes with a
+  real generation run; the fastest sanity check is a single clip
+  (`run_t2v_xpu_perf.py`) and inspecting `git -C LTX-2 status` for the patches.
 
 ## Commands
 
@@ -51,6 +55,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - Device layout per worker `i`: transformer on `xpu:2i`, VAE/decoders on
   `xpu:2i+1`. Max 16 workers on 32 XPUs. `LTX_MULTI_MODE` (8 or 16) sets the
   server/`ltx_server.py` worker count.
+- On a host where torch exposes only one XPU (e.g. a single B70 box:
+  `torch.xpu.device_count()==1` and the iGPU is not exposed), `LTX_CDEV` must
+  equal `LTX_TDEV` (both `0`) — the default `LTX_CDEV=1` fails. That single-B70
+  clip runs in ~68 s, peak 18.15 GB (see README.txt).
 - Text encoding is a shared pre-generation step (`encode_prompts.py`): Gemma-3-12B
   bf16 (~23 GB) does not fit a 24 GB B60, so it runs block-streamed on a spare
   XPU by default (`LTX_GEMMA_DEVICE=xpu:0`, `LTX_GEMMA_OFFLOAD=cpu`; ~2 blocks
@@ -67,9 +75,16 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   while the upsampler/decoders use the VAE device. Disable with
   `LTX_KEEP_TRANSFORMER=0`.
 - The server spawns subprocesses per job (via `run_t2v_xpu_perf.py`) instead
-  of loading models in-process, to avoid OOM from model lifecycle buildup.
-- Multi-worker spawns are staggered (`LTX_SPAWN_DELAY`, seconds) to avoid XPU
-  driver races during concurrent model init.
+  of loading models in-process, to avoid OOM from model lifecycle buildup. It
+  processes one job at a time on a single background thread (queue hardcoded to
+  4); `multi_mode` is videos per job, not concurrent jobs.
+- Multi-worker spawns are staggered to avoid XPU driver races during model init.
+  Only `run_multi_xpu.py`/`run_multi_16.py` read `LTX_SPAWN_DELAY` (default 1 s);
+  the server uses a hardcoded 1 s stagger instead and ignores `LTX_SPAWN_DELAY`.
+- Bearer auth (when `LTX_API_TOKEN` is set) guards the job endpoints only; the
+  `/api/multi-jobs/{id}/videos/{i}` endpoint is unauthenticated.
+- Server default `LTX_GEMMA_DEVICE` is `xpu:0` (vs `cpu` in the single/multi
+  scripts), and `LTX_ENCODER_SERVICE=1` only engages when it is an `xpu:*` spec.
 
 ## Env vars
 
@@ -77,12 +92,15 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `LTX_TDEV`/`LTX_CDEV`, `LTX_OUTPUT_PATH`, `LTX_EMBEDDINGS_PATH`.
   Defaults: 1024x1024, 121 frames @ 24 fps.
 - `LTX_FRAMES` must be `8k+1`; 73 hangs the XPU driver (see
-  `run_t2v_xpu_perf.py:61`).
+  `run_t2v_xpu_perf.py:63`).
 - Prompts for encode: `LTX_PROMPTS_FILE` (JSON array) or stdin JSON.
 - Text encoder: `LTX_GEMMA_DEVICE`, `LTX_GEMMA_OFFLOAD`, `LTX_GEMMA_FP8`,
   `LTX_GEMMA_RESIDENT`, `LTX_ENCODE_MODE`. The server's persistent encoder
   service is `LTX_ENCODER_SERVICE=1` (+ `LTX_ENCODER_FP8`, `LTX_ENCODER_SOCK`);
   `encode_service.py` keeps the Gemma pinned source warm across jobs (~16.6 s
   warm encode for 16 prompts vs a ~44.7 s per-job subprocess encode phase).
-- Server: `LTX_HOST`, `LTX_PORT`, `LTX_API_TOKEN`, `LTX_QUEUE_SIZE`,
-  `LTX_OUTPUT_DIR`, `LTX_DB`.
+- Server: `LTX_HOST` (default `127.0.0.1`), `LTX_PORT` (8001), `LTX_API_TOKEN`
+  (required when non-loopback), `LTX_MULTI_MODE` (default 8), `LTX_OUTPUT_DIR`,
+  `LTX_DB`. `LTX_QUEUE_SIZE` is documented but not wired to the worker queue.
+- Benchmark: `multi_benchmark.py` reads `LTX_BENCH_URL`/`LTX_BENCH_TOKEN`
+  (defaults `http://127.0.0.1:8001`, token `111`) and `LTX_BENCH_OUTPUT`.

@@ -150,6 +150,40 @@ Single clip (transformer on xpu:30, VAE/decoders on xpu:31):
     mux to mp4              18.3 s
   peak xpu:30 18.2 GB, xpu:31 0.8 GB
 
+Single clip on a single B70 (Battlemage G31, 30.3 GiB):
+  On this host torch exposes only one XPU (torch.xpu.device_count()==1,
+  get_device_name(0)=="Intel(R) Graphics [0xe223]"; the Arrow Lake-S iGPU
+  is not exposed), so transformer and VAE/decoders share xpu:0:
+    HF_HUB_OFFLINE=1 LTX_TDEV=0 LTX_CDEV=0 \
+      LTX_GEMMA_DEVICE=xpu:0 LTX_GEMMA_OFFLOAD=cpu \
+      .venv/bin/python -u run_t2v_xpu_perf.py
+  1024x1024 / 121 frames / default prompt: total 68.05 s
+    prompt-encode (xpu:0)    9.54 s
+    stage-1 denoise         17.90 s
+    spatial-upsample 2x      0.67 s
+    stage-2 denoise         22.09 s
+    video+audio decode       5.38 s
+    mux to mp4              12.46 s
+  peak xpu:0 18.15 GB
+
+  B60 (xpu:30/31) vs B70 (xpu:0), same 1024x1024 / 121 frames / default prompt:
+    stage                      B60        B70      speedup
+    prompt-encode             19.10 s     9.54 s   2.00x
+    stage-1 denoise (8 steps) 39.30 s    17.90 s   2.20x
+    spatial-upsample 2x        2.00 s     0.67 s   2.99x
+    stage-2 denoise (3 steps) 39.00 s    22.09 s   1.77x
+    video+audio decode        14.20 s     5.38 s   2.64x
+    mux to mp4                18.30 s    12.46 s   1.47x
+    total                    131.80 s    68.05 s   1.94x
+    peak VRAM             18.2+0.8 GB  18.15 GB   -
+                           (2 cards)    (1 card)
+  => ~1.94x end-to-end. On B70 the remaining bottlenecks are stage-2 denoise
+     (32.5%) and mux (18.3%, mostly the lazy VAE video decode).
+  Caveats: the B60 entry is a 2-device run (transformer/VAE split, with
+  cross-device moves) on a different host, while the B70 run keeps everything
+  on one XPU. Different host CPU/RAM, driver/oneAPI versions, and run-to-run
+  variance (one sample each) all bear on the comparison.
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video
