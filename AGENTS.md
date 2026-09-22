@@ -27,11 +27,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   applies). Check `git -C LTX-2 status` before assuming.
 - Model weights live in gitignored `models/` (~30 GB); fetch with
   `uv run download.py`. Scripts set `HF_HUB_OFFLINE=1`.
-- **Trap:** `run.sh`, `run_b.sh`, `run_multi.sh`, `start_ltx_server.sh` exec a
-  hardcoded `/home/lm/paul/ltx23-env/bin/python` that does not exist. Ignore
-  their interpreter lines; use `.venv/bin/python` (or the README.txt commands).
-  `run_multi_xpu.py`/`run_multi_16.py` default to the same dead path but honor
-  `LTX_PYTHON`; the server's own subprocesses use `<repo>/.venv/bin/python`.
+- The shell launchers (`run.sh`, `run_b.sh`, `run_multi.sh`,
+  `start_ltx_server.sh`) and `run_multi_xpu.py`/`run_multi_16.py` resolve the
+  interpreter to `<repo>/.venv/bin/python`, overridable with `LTX_PYTHON`; the
+  server's own subprocesses do the same.
 - No test, lint, typecheck, or CI config exists in-repo. Verify changes with a
   real generation run; the fastest sanity check is a single clip
   (`run_t2v_xpu_perf.py`) and inspecting `git -C LTX-2 status` for the patches.

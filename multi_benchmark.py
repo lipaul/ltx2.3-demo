@@ -1,4 +1,4 @@
-#!/home/lm/paul/ltx23-env/bin/python
+#!/usr/bin/env python3
 """Benchmark: 10 consecutive 16-video multi-jobs with different prompts."""
 
 import json
@@ -18,7 +18,7 @@ log = logging.getLogger("bench")
 
 BASE = os.environ.get("LTX_BENCH_URL", "http://127.0.0.1:8001")
 TOKEN = os.environ.get("LTX_BENCH_TOKEN", "111")
-OUTPUT = Path(os.environ.get("LTX_BENCH_OUTPUT", "/home/lm/paul/bench_results.json"))
+OUTPUT = Path(os.environ.get("LTX_BENCH_OUTPUT", Path(__file__).resolve().parent / "outputs" / "bench_results.json"))
 
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 

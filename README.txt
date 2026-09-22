@@ -17,11 +17,12 @@ Multi clip (N videos):
 
 Web server (16-video service)
 -----------------------------
-Use the project venv interpreter (.venv/bin/python). Do NOT use run.sh /
-start_ltx_server.sh: they hardcode a nonexistent interpreter.
+Use the project venv interpreter (.venv/bin/python). The shell launchers
+(run.sh, start_ltx_server.sh, ...) resolve it as $HERE/.venv/bin/python and
+honor LTX_PYTHON.
 
 A) Local test (loopback, no token required):
-  cd /home/lm/work/ltx2.3-demo
+  cd <repo>
   LTX_MULTI_MODE=16 LTX_HOST=127.0.0.1 \
     .venv/bin/python ltx_server.py
   # open http://127.0.0.1:8001/
@@ -309,7 +310,8 @@ Measured (1024x1024, 121 frames, 8+3 distilled steps, seed 42):
 Knobs: `LTX_KEEP_TRANSFORMER` (default 1), `LTX_DECODER_MEM_EFFICIENT` (default 0),
 `LTX_PREBUILD_TRANSFORMER` (default 0 -- concurrent Gemma-4 streaming + transformer
 build intermittently raises UR_RESULT_ERROR_DEVICE_LOST on XPU, unlike 2.3).
-`LTX_25_MODELS` points at the split pack (default /home/acm/work/models/ltx-2.5).
+`LTX_25_MODELS` points at the split pack (default `<repo>/models/ltx-2.5`; the
+runner fails fast with the missing-file list if it is not there).
 
 LTX-2.5 web server (opt-in)
 ---------------------------

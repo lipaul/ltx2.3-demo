@@ -93,7 +93,6 @@ for f in ['run_t2v_xpu_perf.py', 'encode_prompts.py']:
     print('  patched', f)
 "
 sed -i 's/DiffusionStage(/DiffusionStage.from_checkpoint(/g' run_t2v_xpu_perf.py
-sed -i 's|OUTPUT_PATH = os.environ.get("LTX_OUTPUT_PATH", "/home/lm/paul/ltx23-run/output_1024.mp4")|OUTPUT_PATH = os.environ.get("LTX_OUTPUT_PATH", str(Path(__file__).resolve().parent / "output" / "output_1024.mp4"))|' run_t2v_xpu_perf.py
 # Add Path import if missing
 grep -q "from pathlib import Path" run_t2v_xpu_perf.py || \
   sed -i 's/^import time/import time\nfrom pathlib import Path/' run_t2v_xpu_perf.py
@@ -104,5 +103,5 @@ uv pip install --no-deps -e LTX-2/packages/ltx-pipelines
 
 echo ""
 echo "Done. Next:"
-echo "  ln -sf /home/lm/paul/ltx23-models/* /home/lm/videogen/models/    # symlink existing models"
+echo "  uv run download.py                       # fetch LTX-2.3 weights into models/"
 echo "  uv run python run_t2v_xpu_perf.py        # single test"

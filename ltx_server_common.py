@@ -13,6 +13,7 @@ import re
 import secrets
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -30,7 +31,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("ltx_server")
 
 LTX23_RUN_DIR = Path(__file__).resolve().parent
-LTX23_ENV_PYTHON = str(LTX23_RUN_DIR / ".venv" / "bin" / "python")
+LTX23_ENV_PYTHON = os.environ.get("LTX_PYTHON", str(LTX23_RUN_DIR / ".venv" / "bin" / "python"))
 GENERATION_SCRIPT = str(LTX23_RUN_DIR / "run_t2v_xpu_perf.py")
 MULTI_SCRIPT = str(LTX23_RUN_DIR / "run_multi_xpu.py")
 MAX_LOG_LINES = 100
@@ -47,7 +48,7 @@ GEMMA_OFFLOAD = os.environ.get("LTX_GEMMA_OFFLOAD", "cpu")
 # LTX_ENCODER_SERVICE=1. Falls back to the encode_prompts.py subprocess.
 ENCODER_SERVICE = os.environ.get("LTX_ENCODER_SERVICE", "0") == "1"
 ENCODER_FP8 = os.environ.get("LTX_ENCODER_FP8", "1") == "1"
-ENCODER_SOCK = os.environ.get("LTX_ENCODER_SOCK", "/tmp/ltx_encoder.sock")
+ENCODER_SOCK = os.environ.get("LTX_ENCODER_SOCK", str(Path(tempfile.gettempdir()) / "ltx_encoder.sock"))
 _ENCODER_PROC: subprocess.Popen | None = None
 _ENCODER_LOCK = threading.Lock()
 

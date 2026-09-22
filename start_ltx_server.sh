@@ -29,4 +29,7 @@ echo "  Multi mode: ${LTX_MULTI_MODE}x"
 echo "  Output dir: ${LTX_OUTPUT_DIR}"
 echo "  Queue size: ${LTX_QUEUE_SIZE}"
 
-exec /home/lm/paul/ltx23-env/bin/python "$HERE/ltx_server.py"
+PYTHON="${LTX_PYTHON:-$HERE/.venv/bin/python}"
+[ -x "$PYTHON" ] || { echo "missing $PYTHON; run 'bash setup_env.sh' or set LTX_PYTHON" >&2; exit 1; }
+
+exec "$PYTHON" "$HERE/ltx_server.py"

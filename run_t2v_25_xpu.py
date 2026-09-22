@@ -12,7 +12,7 @@ See README.txt "LTX-2.5 (opt-in)" for the caveats and measured numbers.
 Run:
     .venv/bin/python run_t2v_25_xpu.py
 Env: LTX_PROMPT, LTX_WIDTH/HEIGHT, LTX_FRAMES, LTX_TDEV, LTX_OUTPUT_PATH,
-     LTX_25_MODELS (defaults to the on-disk split pack).
+     LTX_25_MODELS (split pack root; default <repo>/models/ltx-2.5).
 """
 
 import logging
@@ -26,7 +26,7 @@ import torch
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ltx25")
 
-MODELS = Path(os.environ.get("LTX_25_MODELS", "/home/acm/work/models/ltx-2.5"))
+MODELS = Path(os.environ.get("LTX_25_MODELS", Path(__file__).resolve().parent / "models" / "ltx-2.5"))
 TRANSFORMER = str(MODELS / "diffusion_models" / "ltx-2.5-22b-distilled-transformer-bf16.safetensors")
 TEXT_ENCODER = str(MODELS / "text_encoders" / "gemma4-12b-with-proj-ltx-2.5-bf16.safetensors")
 VIDEO_VAE = str(MODELS / "vae" / "ltx-2.5-video-vae-conv-bf16.safetensors")
@@ -116,6 +116,26 @@ def _prebuild_transformer_async(stage) -> "threading.Thread | None":
     return th
 
 
+def _require_25_pack() -> None:
+    """Fail fast with actionable guidance when the 2.5 split pack is missing."""
+    required = {
+        "transformer": TRANSFORMER,
+        "text_encoder": TEXT_ENCODER,
+        "video_vae": VIDEO_VAE,
+        "audio_vae": AUDIO_VAE,
+        "duration_head": DURATION_HEAD,
+        "spatial_upscaler": SPATIAL_UPSCALER,
+    }
+    missing = [f"  {name}: {path}" for name, path in required.items() if not Path(path).is_file()]
+    if missing:
+        default_dir = Path(__file__).resolve().parent / "models" / "ltx-2.5"
+        raise SystemExit(
+            "LTX-2.5 model pack not found.\n"
+            f"Set LTX_25_MODELS to the split pack root, or place/symlink it at {default_dir}.\n"
+            f"Current root: {MODELS}\nMissing:\n" + "\n".join(missing)
+        )
+
+
 def _mem(tag: str) -> None:
     try:
         used = torch.xpu.memory_allocated(DEVICE) / 1024**3
@@ -128,6 +148,7 @@ def _mem(tag: str) -> None:
 @torch.inference_mode()
 def main() -> None:
     torch.set_num_threads(os.cpu_count() or 8)
+    _require_25_pack()
 
     from ltx_core.model.video_vae import AUTO_TILING, get_video_chunks_number
     from ltx_core.quantization.fp8_cast import build_policy as fp8_cast_policy

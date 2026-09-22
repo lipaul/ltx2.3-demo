@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +24,7 @@ logging.basicConfig(
 log = logging.getLogger("multi_xpu")
 
 LTX23_RUN = os.path.dirname(os.path.abspath(__file__))
-PYTHON = os.environ.get("LTX_PYTHON", "/home/lm/paul/ltx23-env/bin/python")
+PYTHON = os.environ.get("LTX_PYTHON", str(Path(__file__).resolve().parent / ".venv" / "bin" / "python"))
 SCRIPT = os.path.join(LTX23_RUN, "run_t2v_xpu_perf.py")
 ENCODE_SCRIPT = os.path.join(LTX23_RUN, "encode_prompts.py")
 

@@ -17,13 +17,14 @@ VENV="$HERE/.venv"
 [ -x "$VENV/bin/python" ] || { echo "missing $VENV/bin/python; run bash setup_env.sh" >&2; exit 1; }
 
 # icpx whose root provides libsycl.so.8 (the one torch links against).
+ONEAPI_ROOT="${ONEAPI_ROOT:-/opt/intel/oneapi}"
 ICX_BIN=""
-for d in /opt/intel/oneapi/compiler/*/bin; do
+for d in "$ONEAPI_ROOT"/compiler/*/bin; do
     [ -x "$d/icpx" ] || continue
     root="$(dirname "$d")"
     [ -e "$root/lib/libsycl.so.8" ] && ICX_BIN="$d"
 done
-[ -n "$ICX_BIN" ] || { echo "no oneAPI compiler with libsycl.so.8 found under /opt/intel/oneapi/compiler" >&2; exit 1; }
+[ -n "$ICX_BIN" ] || { echo "no oneAPI compiler with libsycl.so.8 found under $ONEAPI_ROOT/compiler (set ONEAPI_ROOT)" >&2; exit 1; }
 
 CACHE="${LTX_TORCH_CACHE_DIR:-$HERE/.torch_cache}"
 mkdir -p "$CACHE/inductor" "$CACHE/triton"

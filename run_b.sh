@@ -10,7 +10,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
-PYTHON="/home/lm/paul/ltx23-env/bin/python"
+# --- python (project venv; override with LTX_PYTHON) ---
+PYTHON="${LTX_PYTHON:-$HERE/.venv/bin/python}"
+[ -x "$PYTHON" ] || { echo "missing $PYTHON; run 'bash setup_env.sh' or set LTX_PYTHON" >&2; exit 1; }
 
 export HF_HUB_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
