@@ -38,6 +38,37 @@ for old, new in [
     s = s.replace(old, new)
 with open(fp, 'w') as f: f.write(s)
 "
+# fp8 prequant fold — tolerate the ``_orig_mod`` prefix torch.compile inserts
+# (transformer_blocks.N._orig_mod.) so LTX_COMPILE=1 can fold the *_scale keys.
+python3 - <<'PY'
+fp = 'packages/ltx-core/src/ltx_core/quantization/fp8_cast.py'
+with open(fp) as f:
+    s = f.read()
+old_on = '''    def _on_param(param_key: str, value: torch.Tensor) -> list[KeyValueOperationResult]:
+        scale = scales.get(param_key)'''
+new_on = '''    def _lookup_scale(param_key: str) -> torch.Tensor | None:
+        # torch.compile moves block params under transformer_blocks.N._orig_mod.
+        # (modify_sd_ops_for_compilation); the scales dict is keyed without it.
+        if param_key in scales:
+            return scales[param_key]
+        return scales.get(param_key.replace("._orig_mod.", "."))
+
+    def _on_param(param_key: str, value: torch.Tensor) -> list[KeyValueOperationResult]:
+        scale = _lookup_scale(param_key)'''
+old_drop = '''        param_key = scale_key.removesuffix("_scale")
+        if param_key not in scales:'''
+new_drop = '''        param_key = scale_key.removesuffix("_scale")
+        if _lookup_scale(param_key) is None:'''
+if old_on in s and old_drop in s:
+    s = s.replace(old_on, new_on).replace(old_drop, new_drop)
+    with open(fp, 'w') as f:
+        f.write(s)
+    print('  patched fp8_cast.py (compile-aware prequant scales)')
+elif '_lookup_scale' in s:
+    print('  fp8_cast.py already compile-aware')
+else:
+    raise SystemExit('fp8_cast.py patch anchors not found')
+PY
 echo "  done"
 cd ..
 

@@ -21,9 +21,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   gemma_root)`, not `checkpoint_path`/`gemma_root`; the decode tiling default is
   `TileSizeConfig.default()` (`TilingConfig` is only a `TileSizeConfig | TileCountConfig`
   alias and has no `.default()`).
-- `setup_env.sh` patches `LTX-2/.../devices.py` and `.../audio_vae/vocoder.py`
-  in place. `patches/xpu.patch` is a reference diff (larger than what the
-  script currently applies). Check `git -C LTX-2 status` before assuming.
+- `setup_env.sh` patches `LTX-2/.../devices.py`, `.../audio_vae/vocoder.py`, and
+  `.../quantization/fp8_cast.py` (compile-aware prequant scales) in place.
+  `patches/xpu.patch` is a reference diff (larger than what the script currently
+  applies). Check `git -C LTX-2 status` before assuming.
 - Model weights live in gitignored `models/` (~30 GB); fetch with
   `uv run download.py`. Scripts set `HF_HUB_OFFLINE=1`.
 - **Trap:** `run.sh`, `run_b.sh`, `run_multi.sh`, `start_ltx_server.sh` exec a
@@ -41,6 +42,9 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `bash setup_env.sh` -> `uv run download.py` -> `uv run python ltx_server.py`.
 - Single clip: `.venv/bin/python run_t2v_xpu_perf.py` (env-configurable, see
   below). There is no `run_t2v_xpu.py` despite docstrings referencing it.
+- Single clip with `torch.compile`: `bash run_t2v_compiled.sh` (wraps the same
+  script with `LTX_COMPILE=1` and the minimal oneAPI/triton environment the
+  dual-GPU host needs; caches JIT artifacts in `.torch_cache/`).
 - Multi-clip (N videos): `.venv/bin/python run_multi_xpu.py --prompts-file
   prompts.json --job-dir OUT` (8 workers) or `run_multi_16.py` (16 workers).
   These pre-encode all prompts once via `encode_prompts.py`, then spawn
@@ -58,7 +62,8 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - On a host where torch exposes only one XPU (e.g. a single B70 box:
   `torch.xpu.device_count()==1` and the iGPU is not exposed), `LTX_CDEV` must
   equal `LTX_TDEV` (both `0`) — the default `LTX_CDEV=1` fails. That single-B70
-  clip runs in ~68 s, peak 18.15 GB (see README.txt).
+  clip runs in ~58.6 s by default (overlap + non-memory-efficient decode) and
+  ~55.8 s with `LTX_COMPILE=1` (warm compile cache); peak 18.16 GB. See README.txt.
 - Text encoding is a shared pre-generation step (`encode_prompts.py`): Gemma-3-12B
   bf16 (~23 GB) does not fit a 24 GB B60, so it runs block-streamed on a spare
   XPU by default (`LTX_GEMMA_DEVICE=xpu:0`, `LTX_GEMMA_OFFLOAD=cpu`; ~2 blocks
@@ -91,6 +96,11 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - Single run: `LTX_PROMPT`, `LTX_WIDTH`/`LTX_HEIGHT`, `LTX_FRAMES`,
   `LTX_TDEV`/`LTX_CDEV`, `LTX_OUTPUT_PATH`, `LTX_EMBEDDINGS_PATH`.
   Defaults: 1024x1024, 121 frames @ 24 fps.
+- Single-clip speed knobs: `LTX_PREBUILD_TRANSFORMER` (default 1; build the
+  transformer while the prompt encodes), `LTX_DECODER_MEM_EFFICIENT` (default 0;
+  the plain conv decode is ~1.8x faster on XPU), and `LTX_COMPILE` (default 0;
+  torch.compile the transformer — launch via `run_t2v_compiled.sh`, which also
+  sets the clean env compile needs).
 - `LTX_FRAMES` must be `8k+1`; 73 hangs the XPU driver (see
   `run_t2v_xpu_perf.py:63`).
 - Prompts for encode: `LTX_PROMPTS_FILE` (JSON array) or stdin JSON.

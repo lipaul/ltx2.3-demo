@@ -16,6 +16,7 @@ the video/audio latents between stages.
 """
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,6 +66,37 @@ FRAME_RATE = 24.0
 
 TDEV = torch.device("xpu", int(os.environ.get("LTX_TDEV", "0")))  # transformer
 CDEV = torch.device("xpu", int(os.environ.get("LTX_CDEV", "1")))  # vae / decoders
+
+# Video VAE decode: the memory-efficient path is much slower on XPU at the default
+# tiling (measured 12.5 s vs 7.1 s for 1024x1024/121 frames) and its activation
+# peak is small (~5.5 GB allocated), so default to the plain conv path.
+# Set LTX_DECODER_MEM_EFFICIENT=1 to restore the old behavior.
+_DECODER_MEM_EFFICIENT = os.environ.get("LTX_DECODER_MEM_EFFICIENT", "0") == "1"
+
+# Optional torch.compile of the transformer blocks (LTX_COMPILE=1). Compilation
+# is only usable on this host with a clean oneAPI/triton environment and the
+# NVIDIA triton backend neutralised; see AGENTS.md / README.txt.
+_COMPILATION_CONFIG = None
+if os.environ.get("LTX_COMPILE", "0") == "1":
+    from ltx_core.model.transformer.compiling import CompilationConfig
+
+    _COMPILATION_CONFIG = CompilationConfig()
+
+
+def _neutralise_nvidia_triton_backend() -> None:
+    """Make triton's driver discovery pick the Intel backend on a dual-GPU host.
+
+    ``triton.backends.nvidia.driver._cuda_driver_is_active`` probes libcuda
+    directly (ignoring CUDA_VISIBLE_DEVICES); with both the Intel and NVIDIA
+    drivers active, triton refuses to select one ("2 active drivers").
+    """
+    try:
+        import triton.backends.nvidia.driver as _tn_driver
+
+        _tn_driver._cuda_driver_is_active = lambda: False
+        log.info("neutralised triton NVIDIA backend (XPU-only triton)")
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not neutralise triton NVIDIA backend: %s", e)
 
 
 def _resolve_gemma_device(spec: str) -> torch.device:
@@ -161,6 +193,32 @@ if _KEEP_TRANSFORMER:
     DiffusionStage._transformer_ctx = _reuse_transformer_ctx
 
 
+def _prebuild_transformer_async(stage) -> threading.Thread | None:
+    """Build the fp8 transformer while the prompt is being encoded.
+
+    The transformer build (~4 s) is weight-load / H2D-copy bound while the Gemma
+    encode (~10 s) is XPU-compute bound, so overlapping them hides the build.
+    The result lands in ``_transformer_cache`` so ``stage(...)`` reuses it.
+    Set ``LTX_PREBUILD_TRANSFORMER=0`` to keep the old sequential order.
+    """
+    if not _KEEP_TRANSFORMER:
+        return None
+    if os.environ.get("LTX_PREBUILD_TRANSFORMER", "1") != "1":
+        return None
+
+    def _work() -> None:
+        try:
+            t0 = time.perf_counter()
+            _transformer_cache[id(stage)] = stage._build_transformer(video_tools=None)
+            log.info("prebuilt transformer during prompt-encode in %.2f s", time.perf_counter() - t0)
+        except Exception as e:  # noqa: BLE001
+            log.warning("async transformer prebuild failed (will build on demand): %s", e)
+
+    th = threading.Thread(target=_work, name="prebuild-transformer", daemon=True)
+    th.start()
+    return th
+
+
 @torch.inference_mode()
 def main() -> None:
     height, width = STAGE1_H * 2, STAGE1_W * 2
@@ -170,6 +228,9 @@ def main() -> None:
 
     log.info("devices: transformer=%s  vae/decoders=%s  text-encoder=%s", TDEV, CDEV, GDEV)
     log.info("target: %dx%d, %d frames @ %.0ffps (stage1 %dx%d)", width, height, NUM_FRAMES, FRAME_RATE, STAGE1_W, STAGE1_H)
+
+    if _COMPILATION_CONFIG is not None:
+        _neutralise_nvidia_triton_backend()
 
     log.info("building fp8-cast quantization policy from %s", DISTILLED_CKPT)
     quantization = fp8_cast_policy(DISTILLED_CKPT)
@@ -182,11 +243,15 @@ def main() -> None:
     stage = DiffusionStage.from_checkpoint(
         checkpoint_path=DISTILLED_CKPT, dtype=dtype, device=TDEV,
         loras=(), quantization=quantization,
+        compilation_config=_COMPILATION_CONFIG,
     )
     upsampler = VideoUpsampler(
         checkpoint_path=DISTILLED_CKPT, upsampler_path=UPSCALER_CKPT, dtype=dtype, device=CDEV,
     )
-    video_decoder = VideoDecoder(checkpoint_path=DISTILLED_CKPT, dtype=dtype, device=CDEV)
+    video_decoder = VideoDecoder(
+        checkpoint_path=DISTILLED_CKPT, dtype=dtype, device=CDEV,
+        memory_efficient=_DECODER_MEM_EFFICIENT,
+    )
     audio_decoder = AudioDecoder(checkpoint_path=DISTILLED_CKPT, dtype=dtype, device=CDEV)
 
     # noiser/generator lives on the transformer device (latents are created there)
@@ -202,9 +267,12 @@ def main() -> None:
         audio_context = data["audio_encoding"].to(TDEV)
         del data
     else:
+        prebuild_thread = _prebuild_transformer_async(stage)
         with _Timer(f"prompt-encode ({GDEV})", CDEV):
             log.info("encoding prompt on %s", GDEV)
             (ctx_p,) = prompt_encoder([PROMPT], enhance_first_prompt=False, enhance_prompt_image=None)
+        if prebuild_thread is not None:
+            prebuild_thread.join()
         _mem("after prompt-encode", CDEV)
         # move context to transformer device
         video_context = ctx_p.video_encoding.to(TDEV)

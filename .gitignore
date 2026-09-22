@@ -19,3 +19,6 @@ __pycache__/
 *.pyo
 *.egg-info/
 .venv/
+
+# torch.compile cache (run_t2v_compiled.sh)
+.torch_cache/

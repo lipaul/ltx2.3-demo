@@ -184,15 +184,53 @@ Single clip on a single B70 (Battlemage G31, 30.3 GiB):
   on one XPU. Different host CPU/RAM, driver/oneAPI versions, and run-to-run
   variance (one sample each) all bear on the comparison.
 
+B70 optimizations (single XPU, 30 GiB)
+--------------------------------------
+Starting from the 68.05 s baseline above, same host / prompt / 1024x1024x121.
+Peak is 18.16 GB on xpu:0 in every case.
+
+  config                                   total     main change
+  ------------------------------------     -------   --------------------------
+  baseline                                 68.05 s
+  + overlap encode / weight load           64.27 s   stage-1 17.90 -> 13.71 s
+  + non-memory-efficient VAE decode        58.64 s   mux    12.42 ->  7.04 s
+  + torch.compile, warm cache              55.82 s   stage-2 22.09 -> 18.30 s
+    same, first run (cold compile cache)   69.83 s   one-time JIT cost
+
+* Overlap (default on): run_t2v_xpu_perf.py builds the fp8 transformer in a
+  background thread while Gemma encodes the prompt, hiding the ~4 s weight
+  load. Disable with LTX_PREBUILD_TRANSFORMER=0.
+* Decode (default on): VideoDecoder(memory_efficient=False) is ~1.8x faster
+  than the memory-efficient path on XPU at the default tiling (7.1 s vs 12.5 s
+  for a 1024x1024/121 latent); activation peak is only ~5.5 GB. Restore the
+  old path with LTX_DECODER_MEM_EFFICIENT=1.
+* torch.compile (opt-in): run via ./run_t2v_compiled.sh (sets LTX_COMPILE=1).
+  Per-block fusion gives ~20% faster denoise steps, but the setup is fussy:
+  - this dual-GPU host needs an Intel toolchain matching torch's bundled SYCL
+    (libsycl.so.8). The login shell's oneAPI 2026.1 (libsycl.so.9) breaks
+    triton ("Backends mismatch" / undefined urDeviceWaitExp), so the wrapper
+    runs with `env -i` and an 2025.x icpx (autodetected; libsycl.so.8 matches).
+  - triton must be pinned with TRITON_DEFAULT_BACKEND=intel, and the harness
+    neutralises triton's NVIDIA backend (both drivers otherwise read "active").
+  - setup_env.sh patches LTX-2's fp8_cast.py so the prequant *_scale fold
+    tolerates the `_orig_mod.` prefix torch.compile inserts.
+  - compile artifacts are cached in .torch_cache/ (gitignored), keyed by the
+    fixed shapes, so only the first run pays the JIT.
+
 Dead ends (measured, reverted)
 ------------------------------
 - x264 / torch thread tuning: "mux to mp4" is dominated by the lazy video
   VAE decode, not the encoder, so there is <1 s of headroom.
-- VAE decode tiling / memory_efficient=False: the conv VAE decode peaks near
-  the 24 GB limit with the default tiles; larger/untiled configs OOM.
-- torch.compile via DiffusionStage's CompilationConfig: incompatible with the
-  fp8-cast policy on the pinned LTX-2 revision (the compiled "._orig_mod"
-  key rewrite desyncs the prequant *_scale keys). Not shipped.
+- VAE decode tiling / memory_efficient: on the 24 GB B60 the non-memory-
+  efficient conv decode peaked near the limit, but on the 30 GiB B70 it is
+  ~1.8x faster and only ~5.5 GB (now the default). Growing/removing the
+  spatial tiles still OOMs and can reset the XPU driver: keep the default
+  768/64 tiling.
+- torch.compile via DiffusionStage's CompilationConfig: the compiled
+  "._orig_mod" key rewrite used to desync the prequant *_scale keys; setup_env.sh
+  now patches fp8_cast.py to make the fold prefix-aware, so compile works.
+  The remaining obstacle is environmental (triton dual-driver + SYCL version),
+  handled by run_t2v_compiled.sh.
 
 Text-encoder (TE) analysis and Phase 4 A/B
 ------------------------------------------
