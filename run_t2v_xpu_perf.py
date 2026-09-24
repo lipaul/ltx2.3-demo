@@ -43,6 +43,13 @@ from ltx_pipelines.utils.types import ModalitySpec, OffloadMode
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ltx23")
 
+
+def _env_on(name: str, default: str = "1") -> bool:
+    # Central R-kernel env helper: LTX_ALL_ORIG=1 forces round-0 (all fall back).
+    if os.environ.get("LTX_ALL_ORIG", "0") == "1":
+        return False
+    return os.environ.get(name, default) != "0"
+
 # --- paths ---
 DISTILLED_CKPT = str(Path(__file__).resolve().parent / "models" / "ltx-2.3-22b-distilled-fp8.safetensors")
 UPSCALER_CKPT = str(Path(__file__).resolve().parent / "models" / "ltx-2.3-spatial-upscaler-x2-1.1.safetensors")
@@ -380,7 +387,7 @@ def main() -> None:
     # --- decode video + audio on xpu:1 ---
     with _Timer("video+audio decode", CDEV):
         log.info("decoding video + audio on %s", CDEV)
-        tiling_config = TileSizeConfig.default()
+        tiling_config = None if _env_on("LTX_R2_NOTILE", "1") else TileSizeConfig.default()
         decoded_video = video_decoder(video_state.latent.to(CDEV), tiling_config, decode_generator)
         decoded_audio = audio_decoder(audio_state.latent.to(CDEV))
     _mem("after decode", CDEV)

@@ -285,6 +285,21 @@ compiles) and inductor already fuses the hot elementwise chains
   Compile knobs (all default off/unset): LTX_COMPILE_MODE, LTX_INDUCTOR_CONFIG,
   LTX_DYNAMO_CONFIG (JSON), LTX_SEQ_DYNAMIC, LTX_FULLGRAPH (0|1).
 
+LTX-2.3 kernel-opt port (R1-R15)
+--------------------------------
+Porting the kernel optimizations from the `LTX-2.3-交付` project (same B70;
+compute-only 49.673 -> 35.017 s, -29.5% there). Adoption rule here: each item
+lands behind an env flag and is enabled only after an on/off A/B on THIS harness
+shows a wall-clock gain beyond noise (interleaved, K>=3, delta >= max(1.0 s,
+2 sigma)); otherwise it stays off. `LTX_ALL_ORIG=1` forces the round-0 path.
+
+  R2  VAE decode without tiling (`tiling_config=None`)   ADOPTED   mux 7.05 -> 5.11 s
+  R1  VAE `channels_last_3d` (memory-efficient path)     N/A       our default
+      decode is the plain conv path, already faster than memory-efficient + R1
+      (mux 8.26 s vs 7.05 s); R1 is inert here, so it was not kept.
+
+Env: `LTX_R2_NOTILE=0` restores tiling; `LTX_ALL_ORIG=1` forces round-0.
+
 LTX-2.5 (opt-in)
 ----------------
 `run_t2v_25_xpu.py` runs LTX-2.5 distilled text-to-video on a single XPU; the
