@@ -111,6 +111,11 @@ if os.environ.get("LTX_COMPILE", "0") == "1":
         _compile_kwargs["fullgraph"] = os.environ["LTX_FULLGRAPH"] == "1"
     _COMPILATION_CONFIG = CompilationConfig(**_compile_kwargs)
     log.info("CompilationConfig: %s", _COMPILATION_CONFIG)
+    # torch.compile (Dynamo) cannot trace the libr8 SYCL ops: they call numel()
+    # on symbolic-shape fake tensors. Disable the SYCL-backed R flags so the
+    # compiled path still runs; eager + R (the fast path) keeps them on.
+    for _k in ("LTX_R8_SYCL", "LTX_R9A_FP8K", "LTX_R9D_K3V", "LTX_R10D_GATE", "LTX_R10D_GATE2"):
+        os.environ.setdefault(_k, "0")
 
 
 def _neutralise_nvidia_triton_backend() -> None:

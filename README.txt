@@ -315,6 +315,14 @@ shipping `libsycl.so.8` (2025.x) to match torch's runtime -- `make` autodetects
 it, override with `ONEAPI_ROOT`/`CC_DIR`. Missing `.so`/non-XPU falls back to
 eager (bitwise-identical).
 
+Compile vs R: `torch.compile` cannot trace the libr8 SYCL ops (Dynamo calls
+`numel()` on symbolic-shape fake tensors), so the compile path
+(`run_t2v_compiled.sh` / `LTX_COMPILE=1`) auto-disables the SYCL flags. With the
+R port the fast path is now **eager**: eager+R stage-1 10.2 s / stage-2 18.8 s
+vs compiled-no-SYCL 14.2 / 18.4 s. Use `run_t2v_xpu_perf.py`.
+2.5 regression: post-port default vs `LTX_ALL_ORIG=1` is bitwise-identical
+(41 frames, max|diff|=0), i.e. the port does not change 2.5.
+
 LTX-2.5 (opt-in)
 ----------------
 `run_t2v_25_xpu.py` runs LTX-2.5 distilled text-to-video on a single XPU; the

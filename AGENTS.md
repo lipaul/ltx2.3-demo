@@ -124,7 +124,9 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   sets explicitly). `LTX_ALL_ORIG=1` forces the pre-port path. The SYCL library
   is built by `setup_env.sh` via `make -C LTX-2/packages/ltx-kernels/csrc/sycl_r8`
   (needs a oneAPI compiler shipping `libsycl.so.8`; missing `.so` falls back to
-  eager).
+  eager). `torch.compile` cannot trace the libr8 SYCL ops, so `LTX_COMPILE=1`
+  auto-disables the SYCL flags; with the R port the fast path is **eager**
+  (`run_t2v_xpu_perf.py`), not `run_t2v_compiled.sh`.
 - Experimental quantized attention: `LTX_ATTN_PATTERN=factorized`
   (`LTX_ATTN_COMBINE=mean|sum`, default `full`) swaps the video self-attention
   for a spatio-temporal factorization (`ltx_factorized_attn.py`). It is ~26%
