@@ -23,6 +23,22 @@ from pathlib import Path
 
 import torch
 
+# The R3/R5/R6/R8/R9D/R10D elementwise fusions target the LTX-2.3 block layout
+# (AdaLN slice shapes, gated attention, RoPE split); the same block code runs
+# for 2.5 but was not validated against it, so default them OFF here (export the
+# flag to opt in). R9A (fp8->bf16 widen) is shared via fp8_cast and stays on; it
+# is bitwise-identical to torch's upcast.
+for _flag in (
+    "LTX_R3_FUSE",
+    "LTX_R5_FUSE",
+    "LTX_R6_FUSE",
+    "LTX_R8_SYCL",
+    "LTX_R9D_K3V",
+    "LTX_R10D_GATE",
+    "LTX_R10D_GATE2",
+):
+    os.environ.setdefault(_flag, "0")
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ltx25")
 

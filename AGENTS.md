@@ -116,6 +116,15 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `LTX_INDUCTOR_CONFIG`/`LTX_DYNAMO_CONFIG` (JSON), `LTX_SEQ_DYNAMIC`,
   `LTX_FULLGRAPH`. Measured dead ends: compiling the VAE decoder is slower than
   eager oneDNN, and `seq_dim_dynamic=False` is net worse (see README.txt).
+- LTX-2.3 kernel-opt port flags (from the delivered R1-R15 project; README.txt):
+  `LTX_R2_NOTILE` (VAE decode without tiling, default 1), `LTX_R9A_FP8K` (SYCL
+  fp8->bf16 widen, default 1), and the elementwise bundle `LTX_R3_FUSE`,
+  `LTX_R5_FUSE`, `LTX_R6_FUSE`, `LTX_R8_SYCL`, `LTX_R9D_K3V`, `LTX_R10D_GATE`,
+  `LTX_R10D_GATE2` (default 1 on 2.3; default 0 on 2.5, which `run_t2v_25_xpu.py`
+  sets explicitly). `LTX_ALL_ORIG=1` forces the pre-port path. The SYCL library
+  is built by `setup_env.sh` via `make -C LTX-2/packages/ltx-kernels/csrc/sycl_r8`
+  (needs a oneAPI compiler shipping `libsycl.so.8`; missing `.so` falls back to
+  eager).
 - Experimental quantized attention: `LTX_ATTN_PATTERN=factorized`
   (`LTX_ATTN_COMBINE=mean|sum`, default `full`) swaps the video self-attention
   for a spatio-temporal factorization (`ltx_factorized_attn.py`). It is ~26%

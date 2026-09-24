@@ -300,6 +300,9 @@ shows a wall-clock gain beyond noise (interleaved, K>=3, delta >= max(1.0 s,
       dominant term is R8 (`LTX_R8_SYCL=0` costs +3.0/+2.7 s); R3 +1.2/+1.8,
       R6 +1.1/+1.7. R7 (Triton) is superseded by R8 and defaults OFF here
       (`LTX_R7_FUSE`, unlike the delivery where it is on-but-inactive).
+      On the LTX-2.5 path these six flags default OFF (`run_t2v_25_xpu.py`):
+      they target the 2.3 block layout and were not validated for 2.5; R9A
+      stays on (shared fp8 path, bitwise-identical). Export a flag to opt in.
   R1  VAE `channels_last_3d` (memory-efficient path)     N/A       our default
       decode is the plain conv path, already faster than memory-efficient + R1
       (mux 8.26 s vs 7.05 s); R1 is inert here, so it was not kept.
