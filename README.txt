@@ -335,15 +335,17 @@ ltx_kernels CUDA kernels, so the only loadable form is our own fp8 cast of the
 bf16 checkpoint (~21 GB resident). The Gemma-4 text encoder (26 GB) is streamed
 with CPU offload, and the fp8 transformer is kept resident across both stages.
 
-Measured (1024x1024, 121 frames, 8+3 distilled steps, seed 42):
-  prompt-encode (Gemma-4, streamed)   ~14 s
-  transformer fp8-cast build           ~6 s
-  stage-1 denoise (8 steps)           ~14 s
-  stage-2 denoise (3 steps)           ~22 s
-  video+audio decode + mux             ~12 s
-  generation 58.5 s + mux 7.1 s; peak xpu:0 reserved 25.3 GB
+Measured (1024x1024, 121 frames, 8+3 distilled, seed 42; two runs, <0.3 s spread):
+  Gemma-4 TE build                      ~8.6 s
+  embeddings processor + prompt encode   ~2.5 s
+  transformer fp8-cast build             ~6.4 s
+  stage-1 denoise (8 steps @512^2)       14.4 s (1.80 s/step)
+  stage-2 denoise (3 steps @1024^2) + decode  ~27 s (7.3 s/step + ~5 s decode)
+  mux to mp4                              ~5.2 s (no tiling; 7.0 s with tiling)
+  generation 58.5-59.1 s; wall ~66 s; peak xpu:0 reserved 25.28 GB
 => 2.5 is roughly 2.3 speed (same 8+3 schedule) with 2.5 quality; ~10 s slower
    overall from the larger Gemma-4 TE and the fp8-cast build.
+   `LTX_R2_NOTILE` also applies here (decode without tiling; mux 7.0 -> 5.2 s).
 
 Knobs: `LTX_KEEP_TRANSFORMER` (default 1), `LTX_DECODER_MEM_EFFICIENT` (default 0),
 `LTX_PREBUILD_TRANSFORMER` (default 0 -- concurrent Gemma-4 streaming + transformer

@@ -39,6 +39,12 @@ for _flag in (
 ):
     os.environ.setdefault(_flag, "0")
 
+
+def _env_on(name: str, default: str = "0") -> bool:
+    if os.environ.get("LTX_ALL_ORIG", "0") == "1":
+        return False
+    return os.environ.get(name, default) != "0"
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ltx25")
 
@@ -220,7 +226,7 @@ def main() -> None:
         frame_rate=FPS,
         images=[],
         num_frames=FRAMES,
-        tiling_config=AUTO_TILING,
+        tiling_config=(None if _env_on("LTX_R2_NOTILE", "1") else AUTO_TILING),
     )
     if prebuild is not None:
         prebuild.join()
