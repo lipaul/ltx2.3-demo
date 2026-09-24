@@ -294,11 +294,18 @@ shows a wall-clock gain beyond noise (interleaved, K>=3, delta >= max(1.0 s,
 2 sigma)); otherwise it stays off. `LTX_ALL_ORIG=1` forces the round-0 path.
 
   R2  VAE decode without tiling (`tiling_config=None`)   ADOPTED   mux 7.05 -> 5.11 s
+  R9A fp8->bf16 vectorized SYCL widen (`r8_sycl`)        ADOPTED   stage-1 -1.54 s, stage-2 -0.55 s
   R1  VAE `channels_last_3d` (memory-efficient path)     N/A       our default
       decode is the plain conv path, already faster than memory-efficient + R1
       (mux 8.26 s vs 7.05 s); R1 is inert here, so it was not kept.
 
-Env: `LTX_R2_NOTILE=0` restores tiling; `LTX_ALL_ORIG=1` forces round-0.
+Env: `LTX_R2_NOTILE=0` restores tiling; `LTX_R9A_FP8K=0` restores torch's fp8
+upcast; `LTX_ALL_ORIG=1` forces round-0. The SYCL library is built by
+`setup_env.sh` (`LTX_SKIP_KERNELS=1` skips it) via
+`make -C LTX-2/packages/ltx-kernels/csrc/sycl_r8`; it needs a oneAPI compiler
+shipping `libsycl.so.8` (2025.x) to match torch's runtime -- `make` autodetects
+it, override with `ONEAPI_ROOT`/`CC_DIR`. Missing `.so`/non-XPU falls back to
+eager (bitwise-identical).
 
 LTX-2.5 (opt-in)
 ----------------

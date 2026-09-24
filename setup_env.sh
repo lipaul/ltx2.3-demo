@@ -69,6 +69,10 @@ elif '_lookup_scale' in s:
 else:
     raise SystemExit('fp8_cast.py patch anchors not found')
 PY
+# R1-R15 kernel-optimization port: fp8 widen hook + R8/R9A/R10D SYCL kernel sources.
+# Applied on the post-XPU-patch baseline; binaries are built in step [6/4].
+git apply ../patches/r_kernels.patch
+echo "  applied patches/r_kernels.patch"
 echo "  done"
 cd ..
 
@@ -100,6 +104,15 @@ grep -q "from pathlib import Path" run_t2v_xpu_perf.py || \
 echo "--- [5/4] Installing LTX-2 packages ---"
 uv pip install --no-deps -e LTX-2/packages/ltx-core
 uv pip install --no-deps -e LTX-2/packages/ltx-pipelines
+
+echo "--- [6/4] Building R8/R9A/R10D SYCL kernels ---"
+if [ "${LTX_SKIP_KERNELS:-0}" = "1" ]; then
+    echo "  skipped (LTX_SKIP_KERNELS=1)"
+else
+    make -C LTX-2/packages/ltx-kernels/csrc/sycl_r8 -j"$(nproc)" >/tmp/ltx_sycl_build.log 2>&1 \
+        && echo "  built libr8_sycl.so" \
+        || echo "  WARNING: SYCL build failed (see /tmp/ltx_sycl_build.log); R8/R9A fall back to eager"
+fi
 
 echo ""
 echo "Done. Next:"
