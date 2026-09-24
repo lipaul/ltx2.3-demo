@@ -38,6 +38,16 @@ for old, new in [
     s = s.replace(old, new)
 with open(fp, 'w') as f: f.write(s)
 "
+# R1-R15 kernel-optimization port (fp8 widen + R8/R9A/R10D SYCL sources).
+# Applied BEFORE the fp8 patch below -- the patch already carries the
+# compile-aware `_lookup_scale` fix, so that step becomes a no-op. It adds new
+# files (r8_sycl.py, r7_fused.py, sycl_r8/*); `checkout -f` leaves untracked
+# files, so clear them first or `git apply` fails on "already exists".
+rm -f packages/ltx-core/src/ltx_core/model/transformer/r8_sycl.py \
+      packages/ltx-core/src/ltx_core/model/transformer/r7_fused.py
+rm -rf packages/ltx-kernels/csrc/sycl_r8
+git apply ../patches/r_kernels.patch
+echo "  applied patches/r_kernels.patch"
 # fp8 prequant fold — tolerate the ``_orig_mod`` prefix torch.compile inserts
 # (transformer_blocks.N._orig_mod.) so LTX_COMPILE=1 can fold the *_scale keys.
 python3 - <<'PY'
@@ -69,16 +79,6 @@ elif '_lookup_scale' in s:
 else:
     raise SystemExit('fp8_cast.py patch anchors not found')
 PY
-# R1-R15 kernel-optimization port: fp8 widen hook + R8/R9A/R10D SYCL kernel sources.
-# Applied on the post-XPU-patch baseline; binaries are built in step [6/4].
-# The patch adds new files (r8_sycl.py, r7_fused.py, sycl_r8/*). `checkout -f`
-# resets tracked files but leaves untracked ones, which would make `git apply`
-# fail on "already exists" -- clear them first.
-rm -f packages/ltx-core/src/ltx_core/model/transformer/r8_sycl.py \
-      packages/ltx-core/src/ltx_core/model/transformer/r7_fused.py
-rm -rf packages/ltx-kernels/csrc/sycl_r8
-git apply ../patches/r_kernels.patch
-echo "  applied patches/r_kernels.patch"
 echo "  done"
 cd ..
 

@@ -120,8 +120,10 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `LTX_R2_NOTILE` (VAE decode without tiling, default 1), `LTX_R9A_FP8K` (SYCL
   fp8->bf16 widen, default 1), and the elementwise bundle `LTX_R3_FUSE`,
   `LTX_R5_FUSE`, `LTX_R6_FUSE`, `LTX_R8_SYCL`, `LTX_R9D_K3V`, `LTX_R10D_GATE`,
-  `LTX_R10D_GATE2` (default 1 on 2.3; default 0 on 2.5, which `run_t2v_25_xpu.py`
-  sets explicitly). `LTX_ALL_ORIG=1` forces the pre-port path. The SYCL library
+  `LTX_R10D_GATE2` (default 1 on 2.3). On 2.5 only `LTX_R5_FUSE` + `LTX_R9A_FP8K`
+  stay on (bitwise-identical); the rest default 0 because their ~1 ULP per-op
+  change is amplified across the 11 diffusion steps and alters the sample.
+  `LTX_ALL_ORIG=1` forces the pre-port path. The SYCL library
   is built by `setup_env.sh` via `make -C LTX-2/packages/ltx-kernels/csrc/sycl_r8`
   (needs a oneAPI compiler shipping `libsycl.so.8`; missing `.so` falls back to
   eager). `torch.compile` cannot trace the libr8 SYCL ops, so `LTX_COMPILE=1`

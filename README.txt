@@ -342,10 +342,14 @@ Measured (1024x1024, 121 frames, 8+3 distilled, seed 42; two runs, <0.3 s spread
   stage-1 denoise (8 steps @512^2)       14.4 s (1.80 s/step)
   stage-2 denoise (3 steps @1024^2) + decode  ~27 s (7.3 s/step + ~5 s decode)
   mux to mp4                              ~5.2 s (no tiling; 7.0 s with tiling)
-  generation 58.5-59.1 s; wall ~66 s; peak xpu:0 reserved 25.28 GB
-=> 2.5 is roughly 2.3 speed (same 8+3 schedule) with 2.5 quality; ~10 s slower
-   overall from the larger Gemma-4 TE and the fp8-cast build.
-   `LTX_R2_NOTILE` also applies here (decode without tiling; mux 7.0 -> 5.2 s).
+  generation ~56 s with R5+R9A on (58.5-59.1 s without); wall ~63 s; peak reserved 25.28 GB
+=> 2.5 is roughly 2.3 speed (same 8+3 schedule) with 2.5 quality.
+   `LTX_R2_NOTILE` applies here too (mux 7.0 -> 5.2 s). `LTX_R5_FUSE` + `LTX_R9A_FP8K`
+   are on and bitwise-identical (verified vs `LTX_ALL_ORIG=1`, 3 prompts).
+   The other R elementwise flags (R3/R6/R8/R9D/R10D) stay OFF for 2.5: they are
+   ~1 ULP per-op but diffusion amplifies that across the 11 steps, so the output
+   diverges (PSNR 20-29, max|diff| 200+). R9A is decoupled from `LTX_R8_SYCL`
+   in `r8_sycl.py` so 2.5 gets the fp8 widen without the R8 fusions.
 
 Knobs: `LTX_KEEP_TRANSFORMER` (default 1), `LTX_DECODER_MEM_EFFICIENT` (default 0),
 `LTX_PREBUILD_TRANSFORMER` (default 0 -- concurrent Gemma-4 streaming + transformer
