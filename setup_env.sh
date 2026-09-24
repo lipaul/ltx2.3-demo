@@ -71,6 +71,12 @@ else:
 PY
 # R1-R15 kernel-optimization port: fp8 widen hook + R8/R9A/R10D SYCL kernel sources.
 # Applied on the post-XPU-patch baseline; binaries are built in step [6/4].
+# The patch adds new files (r8_sycl.py, r7_fused.py, sycl_r8/*). `checkout -f`
+# resets tracked files but leaves untracked ones, which would make `git apply`
+# fail on "already exists" -- clear them first.
+rm -f packages/ltx-core/src/ltx_core/model/transformer/r8_sycl.py \
+      packages/ltx-core/src/ltx_core/model/transformer/r7_fused.py
+rm -rf packages/ltx-kernels/csrc/sycl_r8
 git apply ../patches/r_kernels.patch
 echo "  applied patches/r_kernels.patch"
 echo "  done"
