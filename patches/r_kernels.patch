@@ -1804,7 +1804,7 @@ index 0000000..ad80fe3
 +.PHONY: all clean
 diff --git a/packages/ltx-kernels/csrc/sycl_r8/bench_r8.py b/packages/ltx-kernels/csrc/sycl_r8/bench_r8.py
 new file mode 100644
-index 0000000..d5f1b7d
+index 0000000..f71e05c
 --- /dev/null
 +++ b/packages/ltx-kernels/csrc/sycl_r8/bench_r8.py
 @@ -0,0 +1,125 @@
@@ -1818,7 +1818,7 @@ index 0000000..d5f1b7d
 +
 +import torch
 +
-+sys.path.insert(0, "/home/simon/ltx2.3-demo-main/LTX-2/packages/ltx-core/src")
++sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "ltx-core", "src"))
 +os.environ.setdefault("HF_HUB_OFFLINE", "1")
 +
 +from ltx_core.model.transformer import r8_sycl as R8  # noqa: E402
@@ -1935,7 +1935,7 @@ index 0000000..d5f1b7d
 +print("MICROBENCH_DONE")
 diff --git a/packages/ltx-kernels/csrc/sycl_r8/k3probe.py b/packages/ltx-kernels/csrc/sycl_r8/k3probe.py
 new file mode 100644
-index 0000000..5785239
+index 0000000..8a8281d
 --- /dev/null
 +++ b/packages/ltx-kernels/csrc/sycl_r8/k3probe.py
 @@ -0,0 +1,65 @@
@@ -1945,7 +1945,7 @@ index 0000000..5785239
 +
 +import torch
 +
-+sys.path.insert(0, "/home/simon/ltx2.3-demo-main/LTX-2/packages/ltx-core/src")
++sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "ltx-core", "src"))
 +os.environ.setdefault("HF_HUB_OFFLINE", "1")
 +
 +from ltx_core.model.transformer import rope as R  # noqa: E402
@@ -2006,7 +2006,7 @@ index 0000000..5785239
 +print("PROBE_DONE")
 diff --git a/packages/ltx-kernels/csrc/sycl_r8/numcheck_r8.py b/packages/ltx-kernels/csrc/sycl_r8/numcheck_r8.py
 new file mode 100644
-index 0000000..272a272
+index 0000000..b290806
 --- /dev/null
 +++ b/packages/ltx-kernels/csrc/sycl_r8/numcheck_r8.py
 @@ -0,0 +1,87 @@
@@ -2016,7 +2016,7 @@ index 0000000..272a272
 +
 +import torch
 +
-+sys.path.insert(0, "/home/simon/ltx2.3-demo-main/LTX-2/packages/ltx-core/src")
++sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "ltx-core", "src"))
 +os.environ.setdefault("HF_HUB_OFFLINE", "1")
 +
 +from ltx_core.model.transformer import r8_sycl as R8  # noqa: E402
