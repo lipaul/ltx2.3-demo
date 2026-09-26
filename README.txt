@@ -10,9 +10,18 @@ LTX_MULTI_MODE=16 LTX_HOST="0.0.0.0" LTX_API_TOKEN="lotusmind" uv run python ltx
 Single clip:
   .venv/bin/python run_t2v_xpu_perf.py
 
+Host profile (device layout):
+  LTX_PROFILE=b60dual   # default: transformer xpu:1, VAE+Gemma xpu:0 (32x B60)
+  LTX_PROFILE=b70       # single B70: all roles on xpu:0
+  Explicit LTX_TDEV / LTX_CDEV / LTX_GEMMA_DEVICE override the profile.
+  Do NOT put transformer + VAE + Gemma all on one 24 GB B60: the streamed Gemma
+  weights plus the model do not fit (OOM during the embeddings-processor build).
+
 Multi clip (N videos):
   .venv/bin/python run_multi_xpu.py --prompts-file prompts.json --job-dir OUT
   .venv/bin/python run_multi_16.py --prompts-file prompts.json --job-dir OUT
+  On LTX_PROFILE=b70 these collapse to one writer on xpu:0 per prompt (use the
+  single-clip runner for a single B70).
 
 
 Web server (16-video service)
@@ -41,7 +50,8 @@ Run in the background with a log:
   ... .venv/bin/python -u ltx_server.py > /tmp/ltx_server.log 2>&1 &
 
 Options: LTX_PORT (default 8001), LTX_OUTPUT_DIR, LTX_DB, LTX_ENCODER_SOCK,
-LTX_ENCODER_FP8=0 for bf16.
+LTX_ENCODER_FP8=0 for bf16, LTX_PROFILE (b60dual default / b70). On
+LTX_PROFILE=b70 set LTX_MULTI_MODE=1 so the server does not try to pair XPUs.
 
 In the UI: 16 prompt boxes (count = LTX_MULTI_MODE; fewer is allowed), press
 "Generate". Output: $LTX_OUTPUT_DIR/<job_id>/video_i.mp4, per-worker logs

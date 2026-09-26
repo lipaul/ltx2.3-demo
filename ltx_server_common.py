@@ -371,7 +371,10 @@ class MultiLtxWorker:
         self._max_workers = max_workers
         self._generation_script = generation_script
         self._pre_encode = pre_encode
-        self._device_pairs = device_pairs
+        # LTX_PROFILE=b70 collapses device pairing: all roles share xpu:0.
+        profile = os.environ.get("LTX_PROFILE", "b60dual").strip().lower()
+        self._device_pairs = device_pairs and profile != "b70"
+        self._profile = profile
         self._retries = retries
         self._stagger = 1
         self._queue: queue.Queue[dict] = queue.Queue(maxsize=4)
@@ -419,6 +422,7 @@ class MultiLtxWorker:
             log_path = os.path.join(job_dir, f"video_{i}.log")
 
             env = os.environ.copy()
+            env["LTX_PROFILE"] = self._profile
             if self._device_pairs:
                 env.update({
                     "LTX_TDEV": str(tdev),

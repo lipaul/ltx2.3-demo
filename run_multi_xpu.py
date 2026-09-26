@@ -124,20 +124,31 @@ def main() -> None:
     embeddings_dir = encode_prompts_subprocess(prompts_file)
 
     # ---- step 2: spawn generation jobs ----
+    # Device layout depends on the host profile: b60dual pairs 2 XPUs per worker
+    # (transformer xpu:2i, VAE xpu:2i+1); b70 shares xpu:0 for all roles.
+    profile = os.environ.get("LTX_PROFILE", "b60dual").strip().lower()
+    pairs = profile != "b70"
+
+    def _devices(i: int) -> tuple[int, int]:
+        if not pairs:
+            return 0, 0
+        return i * 2, i * 2 + 1
+
     log.info("=" * 60)
-    log.info("Spawning %d parallel generation jobs on xpu:0..%d",
-             len(prompts), len(prompts) * 2 - 1)
+    log.info("Spawning %d parallel generation jobs (profile=%s, %s)",
+             len(prompts), profile,
+             "xpu:(2i,2i+1)" if pairs else "xpu:(0,0)")
     log.info("=" * 60)
 
     processes: list[dict] = []
     for i in range(len(prompts)):
-        tdev = i * 2
-        cdev = i * 2 + 1
+        tdev, cdev = _devices(i)
         output_path = os.path.join(output_dir, f"video_{i}.mp4")
         log_path = os.path.join(output_dir, f"video_{i}.log")
 
         env = os.environ.copy()
         env.update({
+            "LTX_PROFILE": profile,
             "LTX_TDEV": str(tdev),
             "LTX_CDEV": str(cdev),
             "LTX_PROMPT": prompts[i],

@@ -21,10 +21,14 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   gemma_root)`, not `checkpoint_path`/`gemma_root`; the decode tiling default is
   `TileSizeConfig.default()` (`TilingConfig` is only a `TileSizeConfig | TileCountConfig`
   alias and has no `.default()`).
-- `setup_env.sh` patches `LTX-2/.../devices.py`, `.../audio_vae/vocoder.py`, and
-  `.../quantization/fp8_cast.py` (compile-aware prequant scales) in place.
-  `patches/xpu.patch` is a reference diff (larger than what the script currently
-  applies). Check `git -C LTX-2 status` before assuming.
+- `setup_env.sh` patches `LTX-2/` in place (steps are numbered `[1/4]`..`[6/4]`
+  because later edits were appended). It applies `patches/r_kernels.patch` (the
+  R1-R15 kernel port) plus `sed` patches to `.../devices.py` (XPU sync/empty_cache),
+  `.../audio_vae/vocoder.py` (XPU fp32 fallback) and `.../quantization/fp8_cast.py`
+  (compile-aware prequant scales). `patches/xpu.patch` is a reference diff of the
+  older XPU fixes, not exactly what the script applies. Verify with
+  `git -C LTX-2 status` (r_kernels touches `transformer/{model,ops,rope,transformer}.py`
+  and adds `r7_fused.py`, `r8_sycl.py`, `ltx-kernels/csrc/sycl_r8/`).
 - Model weights live in gitignored `models/` (~30 GB); fetch with
   `uv run download.py`. Scripts set `HF_HUB_OFFLINE=1`.
 - The shell launchers (`run.sh`, `run_b.sh`, `run_multi.sh`,
@@ -39,8 +43,12 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 
 - README.txt is the accurate quickstart:
   `bash setup_env.sh` -> `uv run download.py` -> `uv run python ltx_server.py`.
+- Always run with the project venv: `.venv/bin/python <script>.py` (prepend
+  `HF_HUB_OFFLINE=1` to skip hub lookups). Plain `python`/`python3` is 3.10 and
+  cannot import these packages.
 - Single clip: `.venv/bin/python run_t2v_xpu_perf.py` (env-configurable, see
   below). There is no `run_t2v_xpu.py` despite docstrings referencing it.
+  `LTX_PROFILE` defaults to `b60dual`; use `LTX_PROFILE=b70` on a single-B70 box.
 - Single clip with `torch.compile`: `bash run_t2v_compiled.sh` (wraps the same
   script with `LTX_COMPILE=1` and the minimal oneAPI/triton environment the
   dual-GPU host needs; caches JIT artifacts in `.torch_cache/`).
@@ -68,22 +76,25 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 
 ## Architecture
 
-- Device layout per worker `i`: transformer on `xpu:2i`, VAE/decoders on
-  `xpu:2i+1`. Max 16 workers on 32 XPUs. `LTX_MULTI_MODE` (8 or 16) sets the
-  server/`ltx_server.py` worker count.
-- On a host where torch exposes only one XPU (e.g. a single B70 box:
-  `torch.xpu.device_count()==1` and the iGPU is not exposed), `LTX_CDEV` must
-  equal `LTX_TDEV` (both `0`) — the default `LTX_CDEV=1` fails. That single-B70
-  clip runs in ~58.6 s by default (overlap + non-memory-efficient decode) and
-  ~55.8 s with `LTX_COMPILE=1` (warm compile cache); peak 18.16 GB. See README.txt.
+- Device layout is selected by `LTX_PROFILE` (explicit `LTX_TDEV`/`LTX_CDEV`/
+  `LTX_GEMMA_DEVICE` still override). `b60dual` (default on a 32x B60 node):
+  transformer on `xpu:1`, VAE/decoders + streamed Gemma on `xpu:0`. `b70` (single
+  B70, 30 GiB): everything shares `xpu:0` (the stock `LTX_CDEV=1` does not exist
+  there). Do not put transformer + VAE + Gemma all on one 24 GB B60 — that OOMs
+  while Gemma streams; that is what the profile split exists to avoid.
+- Per-worker pairing `xpu:(2i, 2i+1)` is only for `b60dual` (max 16 workers on
+  32 XPUs); on `b70` the multi-runner and the server collapse every worker to
+  `xpu:(0,0)`. `LTX_MULTI_MODE` (8 or 16) sets the server/`ltx_server.py` worker
+  count — use `1` on B70.
 - Text encoding is a shared pre-generation step (`encode_prompts.py`): Gemma-3-12B
-  bf16 (~23 GB) does not fit a 24 GB B60, so it runs block-streamed on a spare
-  XPU by default (`LTX_GEMMA_DEVICE=xpu:0`, `LTX_GEMMA_OFFLOAD=cpu`; ~2 blocks
-  resident, weights pinned in RAM). Encoding precedes generation, so all XPUs
-  are free. Set `LTX_GEMMA_DEVICE=cpu` to fall back to the old CPU path. The
-  legacy per-prompt mode is `LTX_ENCODE_MODE=loop`; the default `batch` encodes
-  the whole prompt list in one forward. `encode_prompts.py` must stay under
-  `torch.no_grad()` — otherwise Gemma's 48-layer autograd graph balloons memory.
+  bf16 (~23 GB) does not fit a 24 GB B60, so it runs block-streamed on an XPU
+  (`LTX_GEMMA_DEVICE=xpu:0` by profile, `LTX_GEMMA_OFFLOAD=cpu`; ~2 blocks
+  resident, weights pinned in RAM). Encoding precedes generation, so Gemma and
+  the VAE can share an XPU without overlapping. Set `LTX_GEMMA_DEVICE=cpu` to
+  fall back to the old CPU path. The legacy per-prompt mode is
+  `LTX_ENCODE_MODE=loop`; the default `batch` encodes the whole prompt list in one
+  forward. `encode_prompts.py` must stay under `torch.no_grad()` — otherwise
+  Gemma's 48-layer autograd graph balloons memory.
 - Generation is two-stage (stage 1 low-res denoise, 2x spatial upsample,
   stage 2 refine). Target resolution must be divisible by 64; stage 1 is half.
 - `run_t2v_xpu_perf.py` builds the transformer once and keeps it resident across
@@ -91,6 +102,12 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   (~5 s saved per video). Safe because both stages run on the transformer device
   while the upsampler/decoders use the VAE device. Disable with
   `LTX_KEEP_TRANSFORMER=0`.
+- Single-clip runner is `run_t2v_xpu_perf.py`; `run.sh`/`run_b.sh` are thin wrappers
+  around it (both 1024x1024/121; `run.sh` has a stale "73 frames" comment — the
+  default is 121). `LTX_PREBUILD_TRANSFORMER=1` (default on 2.3) builds the fp8
+  transformer in a background thread while Gemma encodes, hiding the ~4 s load;
+  on 2.5 it defaults off (concurrent Gemma-4 streaming + build intermittently
+  raises `UR_RESULT_ERROR_DEVICE_LOST`).
 - The server spawns subprocesses per job (via `run_t2v_xpu_perf.py`) instead
   of loading models in-process, to avoid OOM from model lifecycle buildup. It
   processes one job at a time on a single background thread (queue hardcoded to
@@ -105,6 +122,9 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 
 ## Env vars
 
+- Host layout: `LTX_PROFILE` (`b60dual` default / `b70`) picks the device tuple;
+  `LTX_TDEV` / `LTX_CDEV` / `LTX_GEMMA_DEVICE` override it individually. Unknown
+  profiles fail fast.
 - Single run: `LTX_PROMPT`, `LTX_WIDTH`/`LTX_HEIGHT`, `LTX_FRAMES`,
   `LTX_TDEV`/`LTX_CDEV`, `LTX_OUTPUT_PATH`, `LTX_EMBEDDINGS_PATH`.
   Defaults: 1024x1024, 121 frames @ 24 fps.
@@ -120,30 +140,52 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
   `LTX_R2_NOTILE` (VAE decode without tiling, default 1), `LTX_R9A_FP8K` (SYCL
   fp8->bf16 widen, default 1), and the elementwise bundle `LTX_R3_FUSE`,
   `LTX_R5_FUSE`, `LTX_R6_FUSE`, `LTX_R8_SYCL`, `LTX_R9D_K3V`, `LTX_R10D_GATE`,
-  `LTX_R10D_GATE2` (default 1 on 2.3). On 2.5 only `LTX_R5_FUSE` + `LTX_R9A_FP8K`
-  stay on (bitwise-identical); the rest default 0 because their ~1 ULP per-op
-  change is amplified across the 11 diffusion steps and alters the sample.
-  `LTX_ALL_ORIG=1` forces the pre-port path. The SYCL library
+  `LTX_R10D_GATE2` (default 1 on 2.3). The env helpers live in the patched
+  `LTX-2` files (`_env_on(name, default="1")`); some experiment sub-flags are
+  default-off (`LTX_R7_FUSE`, `LTX_R10D_GELU`, `LTX_R10D_K1HOLD`, `LTX_R9A_V2`,
+  `LTX_R9A_WG`). On 2.5 only `LTX_R5_FUSE` + `LTX_R9A_FP8K` + `LTX_R2_NOTILE`
+  stay on (bitwise-identical; `run_t2v_25_xpu.py` `setdefault`s the other six to
+  `0`); their ~1 ULP per-op change is amplified across the 11 diffusion steps and
+  alters the sample. `LTX_ALL_ORIG=1` forces the pre-port path. The SYCL library
   is built by `setup_env.sh` via `make -C LTX-2/packages/ltx-kernels/csrc/sycl_r8`
   (needs a oneAPI compiler shipping `libsycl.so.8`; missing `.so` falls back to
-  eager). `torch.compile` cannot trace the libr8 SYCL ops, so `LTX_COMPILE=1`
-  auto-disables the SYCL flags; with the R port the fast path is **eager**
-  (`run_t2v_xpu_perf.py`), not `run_t2v_compiled.sh`.
+  eager and `LTX_SKIP_KERNELS=1` skips the build). `torch.compile` cannot trace the
+  libr8 SYCL ops, so `LTX_COMPILE=1` auto-disables the SYCL flags; with the R port
+  the fast path is **eager** (`run_t2v_xpu_perf.py`), not `run_t2v_compiled.sh`.
+  Per-flag A/B numbers are rolled up in README.txt (R2, R9A, R3/R5/R6/R8/R9D/R10D);
+  a flag is only kept on when an on/off A/B clears the noise gate.
 - Experimental quantized attention: `LTX_ATTN_PATTERN=factorized`
   (`LTX_ATTN_COMBINE=mean|sum`, default `full`) swaps the video self-attention
   for a spatio-temporal factorization (`ltx_factorized_attn.py`). It is ~26%
   faster on stage-2 but **fails fidelity badly** (PSNR 7-10 dB, LPIPS ~0.8 vs
   full); do not enable it for real generation.
 - `LTX_FRAMES` must be `8k+1`; 73 hangs the XPU driver (see
-  `run_t2v_xpu_perf.py:63`).
-- Prompts for encode: `LTX_PROMPTS_FILE` (JSON array) or stdin JSON.
+  `run_t2v_xpu_perf.py:71`). `LTX_DECODER_MEM_EFFICIENT=1` restores the
+  memory-efficient conv path (slower on XPU, but the plain decode's peak is
+  closer to the limit on a 24 GB B60).
+- Multi-clip launchers additionally read `LTX_PROMPTS_FILE` (JSON array),
+  `LTX_MULTI_OUTPUT_DIR` (output default) and `LTX_SPAWN_DELAY` (default 1 s).
+  With `--prompts-file`, the batch size must match the launcher (8 in
+  `run_multi_xpu.py`, 16 in `run_multi_16.py`). `encode_prompts.py` also accepts
+  prompts on stdin JSON.
 - Text encoder: `LTX_GEMMA_DEVICE`, `LTX_GEMMA_OFFLOAD`, `LTX_GEMMA_FP8`,
   `LTX_GEMMA_RESIDENT`, `LTX_ENCODE_MODE`. The server's persistent encoder
-  service is `LTX_ENCODER_SERVICE=1` (+ `LTX_ENCODER_FP8`, `LTX_ENCODER_SOCK`);
-  `encode_service.py` keeps the Gemma pinned source warm across jobs (~16.6 s
-  warm encode for 16 prompts vs a ~44.7 s per-job subprocess encode phase).
-- Server: `LTX_HOST` (default `127.0.0.1`), `LTX_PORT` (8001), `LTX_API_TOKEN`
-  (required when non-loopback), `LTX_MULTI_MODE` (default 8), `LTX_OUTPUT_DIR`,
-  `LTX_DB`. `LTX_QUEUE_SIZE` is documented but not wired to the worker queue.
+  service is `LTX_ENCODER_SERVICE=1` (+ `LTX_ENCODER_FP8`, `LTX_ENCODER_SOCK`,
+  default `/tmp/ltx_encoder.sock`); `encode_service.py` keeps the Gemma pinned
+  source warm across jobs (~16.6 s warm encode for 16 prompts vs a ~44.7 s
+  per-job subprocess encode phase). It only engages when the server's
+  `LTX_GEMMA_DEVICE` is an `xpu:*` spec.
+- Server: `LTX_HOST` (default `127.0.0.1`), `LTX_PORT` (8001; the 2.5 server uses
+  8002), `LTX_API_TOKEN` (required when non-loopback), `LTX_MULTI_MODE` (default
+  8), `LTX_OUTPUT_DIR`, `LTX_DB`. `LTX_QUEUE_SIZE` is documented and appears in
+  server logs but the worker's `queue.Queue` is hardcoded to `maxsize=4`.
 - Benchmark: `multi_benchmark.py` reads `LTX_BENCH_URL`/`LTX_BENCH_TOKEN`
   (defaults `http://127.0.0.1:8001`, token `111`) and `LTX_BENCH_OUTPUT`.
+
+## Reference docs
+
+- `README.txt` — full measured history: per-stage timings, compile dead ends,
+  R-flag A/Bs, TE analysis, and the B60/B70 comparison.
+- `B70使用说明.md` — Chinese quickstart for the single-B70 host (fresh clone →
+  run → serve), including the `LTX_TDEV=LTX_CDEV=0` requirement and device thermal
+  checks; assumes repo at `/home/acm/paul_arc/ltx2.3-demo`.

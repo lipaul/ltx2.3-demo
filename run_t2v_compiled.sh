@@ -10,6 +10,10 @@
 #
 # First run compiles the blocks (~9 s extra); later runs reuse the cache in
 # .torch_cache/ (shapes are fixed).  Override the usual LTX_* generation vars.
+#
+# Layout: torch.compile is only viable on the single-card / oneAPI-host path, so
+# this wrapper defaults to LTX_PROFILE=b70 (all roles on xpu:0). Override
+# LTX_PROFILE / LTX_TDEV / LTX_CDEV / LTX_GEMMA_DEVICE to change it.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +38,7 @@ args=(
     TRITON_DEFAULT_BACKEND=intel LTX_COMPILE=1
     TORCHINDUCTOR_CACHE_DIR="$CACHE/inductor" TRITON_CACHE_DIR="$CACHE/triton"
     HF_HUB_OFFLINE=1
+    LTX_PROFILE="${LTX_PROFILE:-b70}"
     LTX_TDEV="${LTX_TDEV:-0}" LTX_CDEV="${LTX_CDEV:-0}"
     LTX_GEMMA_DEVICE="${LTX_GEMMA_DEVICE:-xpu:0}" LTX_GEMMA_OFFLOAD="${LTX_GEMMA_OFFLOAD:-cpu}"
     LTX_WIDTH="${LTX_WIDTH:-1024}" LTX_HEIGHT="${LTX_HEIGHT:-1024}" LTX_FRAMES="${LTX_FRAMES:-121}"

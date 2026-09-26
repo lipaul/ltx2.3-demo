@@ -71,8 +71,27 @@ STAGE1_H, STAGE1_W = _TARGET_H // 2, _TARGET_W // 2  # stage 2 -> target
 NUM_FRAMES = int(os.environ.get("LTX_FRAMES", "121"))  # 8k + 1 (73 hangs XPU driver)
 FRAME_RATE = 24.0
 
-TDEV = torch.device("xpu", int(os.environ.get("LTX_TDEV", "0")))  # transformer
-CDEV = torch.device("xpu", int(os.environ.get("LTX_CDEV", "1")))  # vae / decoders
+# --- host profile / device layout ---
+# LTX_PROFILE selects the default device layout; explicit LTX_TDEV / LTX_CDEV /
+# LTX_GEMMA_DEVICE always win. Profiles:
+#   b60dual (default): 32x B60. transformer on xpu:1, VAE/decoders on xpu:0,
+#     Gemma streamed on xpu:0 (encoding precedes generation, so the two do not
+#     overlap; the streaming context frees Gemma's XPU memory before decode).
+#   b70: single B70 (30 GiB). Everything shares xpu:0 (the default LTX_CDEV=1
+#     does not exist there).
+_PROFILE = os.environ.get("LTX_PROFILE", "b60dual").strip().lower()
+_PROFILE_DEVICES = {
+    "b60dual": {"tdev": "1", "cdev": "0", "gdev": "xpu:0"},
+    "b70": {"tdev": "0", "cdev": "0", "gdev": "xpu:0"},
+}
+if _PROFILE not in _PROFILE_DEVICES:
+    raise SystemExit(
+        f"Unknown LTX_PROFILE={_PROFILE!r}; expected one of {sorted(_PROFILE_DEVICES)}"
+    )
+_PD = _PROFILE_DEVICES[_PROFILE]
+
+TDEV = torch.device("xpu", int(os.environ.get("LTX_TDEV", _PD["tdev"])))  # transformer
+CDEV = torch.device("xpu", int(os.environ.get("LTX_CDEV", _PD["cdev"])))  # vae / decoders
 
 # Video VAE decode: the memory-efficient path is much slower on XPU at the default
 # tiling (measured 12.5 s vs 7.1 s for 1024x1024/121 frames) and its activation
@@ -168,9 +187,10 @@ def _resolve_gemma_device(spec: str) -> torch.device:
     return torch.device(spec)
 
 
-# Gemma text encoder: default CPU (bf16 ~23 GB does not fit a single 24 GB B60).
-# Set LTX_GEMMA_DEVICE=xpu:<n> (+ LTX_GEMMA_OFFLOAD=cpu) to stream it on an XPU.
-GDEV = _resolve_gemma_device(os.environ.get("LTX_GEMMA_DEVICE", "cpu"))
+# Gemma text encoder: default per profile (see LTX_PROFILE above). bf16 (~23 GB)
+# does not fit a single 24 GB B60, so on an XPU it streams with CPU offload.
+# Set LTX_GEMMA_DEVICE=cpu to use the legacy CPU path.
+GDEV = _resolve_gemma_device(os.environ.get("LTX_GEMMA_DEVICE", _PD["gdev"]))
 GEMMA_OFFLOAD = {
     "cpu": OffloadMode.CPU,
     "disk": OffloadMode.DISK,
@@ -285,7 +305,8 @@ def main() -> None:
     dtype = torch.bfloat16
     torch.set_num_threads(os.cpu_count() or 8)  # CPU-side work (Gemma streaming, mux)
 
-    log.info("devices: transformer=%s  vae/decoders=%s  text-encoder=%s", TDEV, CDEV, GDEV)
+    log.info("profile=%s  devices: transformer=%s  vae/decoders=%s  text-encoder=%s",
+             _PROFILE, TDEV, CDEV, GDEV)
     log.info("target: %dx%d, %d frames @ %.0ffps (stage1 %dx%d)", width, height, NUM_FRAMES, FRAME_RATE, STAGE1_W, STAGE1_H)
 
     if _COMPILATION_CONFIG is not None:
