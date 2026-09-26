@@ -59,7 +59,9 @@ clone (installed editable from `LTX-2/packages/{ltx-core,ltx-pipelines}`).
 - LTX-2.5 (opt-in): `.venv/bin/python run_t2v_25_xpu.py` (single XPU). The 2.5
   bf16 transformer (42 GB) is fp8-cast at load (~21 GB) because the official
   comfy-int8-convrot / nvfp4 variants need CUDA (`ltx_kernels`) kernels; Gemma-4
-  is streamed. 2.3 (`run_t2v_xpu_perf.py`) stays the default.
+  is streamed. 2.3 (`run_t2v_xpu_perf.py`) stays the default. On a 24 GiB B60 set
+  `LTX_KEEP_TRANSFORMER=0` so the fp8 transformer is freed after stage 2 before the
+  VAE decode; with the default `1` the decode OOMs. The 30 GiB B70 keeps it resident.
 - LTX-2.5 server: `bash start_ltx_server_25.sh` (127.0.0.1:8002) ->
   `ltx_server_25.py`, same design as `ltx_server.py` but single-path via
   `run_t2v_25_xpu.py` (`ModelProfile(pre_encode=False, device_pairs=False,

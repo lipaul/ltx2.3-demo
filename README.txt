@@ -343,7 +343,9 @@ comfy-int8-convrot (21.5 GB) and nvfp4 (18.7 GB) transformers. On a 30 GiB B70
 the bf16 does not fit and the int8-convrot / nvfp4 formats need ComfyUI /
 ltx_kernels CUDA kernels, so the only loadable form is our own fp8 cast of the
 bf16 checkpoint (~21 GB resident). The Gemma-4 text encoder (26 GB) is streamed
-with CPU offload, and the fp8 transformer is kept resident across both stages.
+with CPU offload. On a 30 GiB B70 the fp8 transformer stays resident across both
+stages; on a 24 GiB B60 it has to be freed before the decode (see "2.5 on a
+24 GiB B60" below).
 
 Measured (1024x1024, 121 frames, 8+3 distilled, seed 42; two runs, <0.3 s spread):
   Gemma-4 TE build                      ~8.6 s
@@ -366,6 +368,35 @@ Knobs: `LTX_KEEP_TRANSFORMER` (default 1), `LTX_DECODER_MEM_EFFICIENT` (default 
 build intermittently raises UR_RESULT_ERROR_DEVICE_LOST on XPU, unlike 2.3).
 `LTX_25_MODELS` points at the split pack (default `<repo>/models/ltx-2.5`; the
 runner fails fast with the missing-file list if it is not there).
+
+2.5 on a 24 GiB B60
+-------------------
+The 32x B60 node also runs 2.5, on a single xpu:0 (the 2.5 runner is
+single-device by design; `LTX_PROFILE` does not apply -- `LTX_TDEV` picks the
+device). The 1024x1024/121 generation itself fits, but the default
+`LTX_KEEP_TRANSFORMER=1` keeps the fp8 transformer cached, so the ~19 GB model
+is still resident when the lazy VAE decode runs and the decode OOMs
+("XPU out of memory. Tried to allocate 1022.00 MiB. GPU 0 has a total capacity
+of 23.91 GiB of which 250.22 MiB is free"). Set `LTX_KEEP_TRANSFORMER=0`: after
+stage 2 the `gpu_model` context frees the transformer, the decoder gets the
+whole card, and the extra transformer rebuild costs ~6 s.
+
+  HF_HUB_OFFLINE=1 \
+  LTX_25_MODELS=/path/to/ltx-2.5 \
+  LTX_KEEP_TRANSFORMER=0 \
+    .venv/bin/python -u run_t2v_25_xpu.py
+
+Measured (single xpu:0, 1024x1024, 121 frames, 8+3 distilled, seed 42):
+  Gemma-4 TE build + embeddings processor + prompt encode  ~14.5 s
+  transformer fp8-cast build                     ~11.6 s (stage 1), ~5.5 s (stage 2 rebuild)
+  stage-1 denoise (8 steps @512^2)               23.1 s (2.85 s/step)
+  stage-2 denoise (3 steps @1024^2)              38.1 s (12.6 s/step)
+  video+audio decode + mux                       13.3 s
+  generation 101.2 s; wall ~115 s; peak reserved 22.68 GB
+=> ~1.8x the 30 GiB B70 wall (~63 s); stage-2 per-step ~1.7x (12.6 vs 7.3 s).
+   Still opt-in -- the B60 default stays 2.3 (`run_t2v_xpu_perf.py`), and the
+   2.5 server (`start_ltx_server_25.sh`) needs `LTX_KEEP_TRANSFORMER=0` on B60
+   too (it inherits the environment).
 
 LTX-2.5 web server (opt-in)
 ---------------------------
